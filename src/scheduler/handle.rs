@@ -5,14 +5,22 @@ use crate::{
 use crossbeam::channel::{bounded, Sender};
 
 /// Cloneable, Send + Sync handle for submitting commands to the scheduler.
+///
+/// This handle allows adding tasks from multiple threads. The context type `Ctx`
+/// must implement `Send + Sync + 'static`.
 #[derive(Clone)]
-pub struct SchedulerHandle {
-    pub(crate) cmd_tx: Sender<Command>,
+pub struct SchedulerHandle<Ctx = ()> {
+    pub(crate) cmd_tx: Sender<Command<Ctx>>,
 }
 
-impl SchedulerHandle {
-    /// Add a new task. Returns a TaskId for future reference.
-    pub fn add_task(&self, config: TaskConfig) -> Result<TaskId, SchedulerError> {
+impl<Ctx> SchedulerHandle<Ctx>
+where
+    Ctx: Send + Sync + 'static,
+{
+    /// Add a new task from any thread. Returns a TaskId for future reference.
+    ///
+    /// This method requires the task configuration (including callbacks) to be Send + Sync.
+    pub fn add_task(&self, config: TaskConfig<Ctx>) -> Result<TaskId, SchedulerError> {
         let (response_tx, response_rx) = bounded(1);
 
         self.cmd_tx

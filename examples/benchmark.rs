@@ -33,8 +33,7 @@ fn parse_duration_with_units(s: &str) -> Result<Duration, String> {
     }
 
     // Check for multi-character units (ms, us, ns) first
-    if s.ends_with("ms") {
-        let num_part = &s[..s.len() - 2];
+    if let Some(num_part) = s.strip_suffix("ms") {
         if num_part.is_empty() {
             return Err("duration must have a numeric value before the unit".to_string());
         }
@@ -44,8 +43,7 @@ fn parse_duration_with_units(s: &str) -> Result<Duration, String> {
         return Ok(Duration::from_millis(millis));
     }
 
-    if s.ends_with("us") {
-        let num_part = &s[..s.len() - 2];
+    if let Some(num_part) = s.strip_suffix("us") {
         if num_part.is_empty() {
             return Err("duration must have a numeric value before the unit".to_string());
         }
@@ -55,8 +53,7 @@ fn parse_duration_with_units(s: &str) -> Result<Duration, String> {
         return Ok(Duration::from_micros(micros));
     }
 
-    if s.ends_with("ns") {
-        let num_part = &s[..s.len() - 2];
+    if let Some(num_part) = s.strip_suffix("ns") {
         if num_part.is_empty() {
             return Err("duration must have a numeric value before the unit".to_string());
         }
@@ -344,10 +341,7 @@ async fn main() {
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║          Syncopate Scheduler Benchmark                       ║");
     println!("╠══════════════════════════════════════════════════════════════╣");
-    println!(
-        "║ Running {} benchmark                                        ║",
-        format!("{:?}", benchmark_duration)
-    );
+    println!("║ Running {:?} benchmark                                        ║", benchmark_duration);
     println!(
         "║ Scheduler: min={:?}, max={:?}                                 ║",
         min_period, max_period
@@ -360,17 +354,27 @@ async fn main() {
     println!("╚══════════════════════════════════════════════════════════════╝");
     println!();
 
-    // Shared storage for execution data
-    let executions = Arc::new(Mutex::new(Vec::new()));
-    let missed_count = Arc::new(Mutex::new(0usize));
+    // Define benchmark context with shared storage for execution data
+    #[derive(Clone)]
+    struct BenchmarkContext {
+        executions: Arc<Mutex<Vec<TaskExecution>>>,
+        missed_count: Arc<Mutex<usize>>,
+        window_before: Duration,
+        window_after: Duration,
+    }
 
-    let executions_clone = executions.clone();
-    let missed_count_clone = missed_count.clone();
+    let context = BenchmarkContext {
+        executions: Arc::new(Mutex::new(Vec::new())),
+        missed_count: Arc::new(Mutex::new(0)),
+        window_before,
+        window_after,
+    };
 
-    // Build scheduler
+    // Build scheduler with context
     let (handle, mut scheduler) = SchedulerBuilder::new()
         .min_period(min_period)
         .max_period(max_period)
+        .with_context(context.clone())
         .build();
 
     let benchmark_start = Instant::now();
@@ -393,15 +397,47 @@ async fn main() {
 
         // Use spawn_blocking because add_task uses blocking crossbeam channels
         let task_id = tokio::task::spawn_blocking(move || {
-            handle_clone.add_task(TaskConfig {
-                task_type: TaskType::Periodic {
-                    period: task_period_clone,
-                    window_before: window_before_clone,
-                    window_after: window_after_clone,
-                },
-                priority: 0,
-                name: Some("benchmark_1hz".into()),
-            })
+            handle_clone.add_task(
+                TaskConfig::<BenchmarkContext> {
+                    task_type: TaskType::Periodic {
+                        period: task_period_clone,
+                        window_before: window_before_clone,
+                        window_after: window_after_clone,
+                    },
+                    priority: 0,
+                    name: Some("benchmark_1hz".into()),
+                    on_execute: None,
+                    on_miss: None,
+                }
+                .with_executor(|exec, ctx| {
+                    // Record execution in the context
+                    let delta_micros = if exec.actual_time >= exec.ideal_time {
+                        exec.actual_time
+                            .duration_since(exec.ideal_time)
+                            .as_micros() as i64
+                    } else {
+                        -(exec
+                            .ideal_time
+                            .duration_since(exec.actual_time)
+                            .as_micros() as i64)
+                    };
+
+                    let task_exec = TaskExecution {
+                        ideal_time: exec.ideal_time,
+                        actual_time: exec.actual_time,
+                        delta_micros,
+                        window_before: ctx.window_before,
+                        window_after: ctx.window_after,
+                    };
+
+                    ctx.executions.lock().unwrap().push(task_exec);
+                })
+                .with_miss_handler(|_miss, ctx| {
+                    // Record miss in the context
+                    let mut missed = ctx.missed_count.lock().unwrap();
+                    *missed += 1;
+                }),
+            )
         })
         .await
         .expect("Task panicked")
@@ -412,54 +448,26 @@ async fn main() {
     });
 
     // Spawn scheduler loop
+    let context_for_reporting = context.clone();
     let scheduler_handle = tokio::spawn(async move {
         let mut last_report = Instant::now();
         let report_interval = Duration::from_secs(1);
-        let mut _iteration = 0;
 
         loop {
-            let plan = scheduler.poll();
-
-            // Process due tasks
-            if !plan.due_tasks.is_empty() {
-                let actual_time = Instant::now();
-
-                for task in &plan.due_tasks {
-                    let delta_micros =
-                        actual_time.duration_since(task.ideal_time).as_micros() as i64;
-
-                    let exec = TaskExecution {
-                        ideal_time: task.ideal_time,
-                        actual_time,
-                        delta_micros,
-                        window_before,
-                        window_after,
-                    };
-
-                    executions_clone.lock().unwrap().push(exec);
-                }
-
-                let completed: Vec<_> = plan.due_tasks.iter().map(|t| t.id).collect();
-                scheduler.mark_completed(&completed);
-            }
-
-            // Process missed tasks
-            if !plan.missed_tasks.is_empty() {
-                let mut missed = missed_count_clone.lock().unwrap();
-                *missed += plan.missed_tasks.len();
-            }
+            // Poll the scheduler - callbacks execute automatically!
+            let idle = scheduler.poll();
 
             // Periodic progress report
             if last_report.elapsed() >= report_interval {
                 let elapsed = benchmark_start.elapsed();
-                let execs = executions_clone.lock().unwrap();
-                let missed = *missed_count_clone.lock().unwrap();
+                let execs = context_for_reporting.executions.lock().unwrap();
+                let missed = *context_for_reporting.missed_count.lock().unwrap();
                 println!(
                     "[{:>5.1}s] Executions: {:>3}  Missed: {:>2}  Idle: {:>8.1}ms",
                     elapsed.as_secs_f64(),
                     execs.len(),
                     missed,
-                    plan.idle_duration.as_secs_f64() * 1000.0
+                    idle.as_secs_f64() * 1000.0
                 );
                 last_report = Instant::now();
             }
@@ -476,21 +484,19 @@ async fn main() {
             // Sleep for idle duration (capped to allow command processing)
             // Note: We use crossbeam channels which aren't async-aware,
             // so we need to wake up periodically to check for new commands
-            if plan.idle_duration > Duration::ZERO {
-                let sleep_duration = plan.idle_duration.min(Duration::from_millis(100));
+            if idle > Duration::ZERO {
+                let sleep_duration = idle.min(Duration::from_millis(100));
                 tokio::time::sleep(sleep_duration).await;
             }
-
-            _iteration += 1;
         }
     });
 
     // Wait for scheduler to complete
     scheduler_handle.await.unwrap();
 
-    // Generate and print statistics
-    let executions = executions.lock().unwrap();
-    let missed_count = *missed_count.lock().unwrap();
+    // Generate and print statistics from context
+    let executions = context.executions.lock().unwrap();
+    let missed_count = *context.missed_count.lock().unwrap();
 
     let stats = BenchmarkStats::from_executions(&executions, missed_count);
     stats.print("1 Hz Periodic Task", task_period);
@@ -691,7 +697,7 @@ async fn main() {
             println!("╠══════════════════════════════════════════════════════════════╣");
 
             let show_count = 10.min(drifted_tasks.len());
-            for (_idx, (exec_num, drift)) in drifted_tasks.iter().take(show_count).enumerate() {
+            for (exec_num, drift) in drifted_tasks.iter().take(show_count) {
                 let notes = if *exec_num <= 100 {
                     "warm-up"
                 } else {

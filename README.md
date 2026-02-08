@@ -9,7 +9,8 @@ Syncopate provides a flexible scheduler for managing periodic tasks with configu
 - **Deterministic timing**: Schedule tasks to run at specific intervals
 - **Execution windows**: Define acceptable time ranges for task execution (early/on-time/late detection)
 - **Power efficiency**: Idle durations calculated to minimize CPU wakeups
-- **Hierarchical organization**: Group and manage related tasks (planned)
+- **Flexible contexts**: Share state between tasks using custom context types
+- **Runtime flexibility**: Support both single-threaded and multi-threaded async runtimes
 
 ## Quick Start
 
@@ -21,69 +22,216 @@ syncopate = "0.1"
 tokio = { version = "1", features = ["full"] }
 ```
 
-## Example
+## Examples
+
+### Simple Callback-Based Usage
+
+The callback-based API provides a clean, minimal interface where tasks execute automatically:
 
 ```rust
 use std::time::Duration;
 use syncopate::{
     scheduler::SchedulerBuilder,
-    task::{TaskConfig, TaskId, TaskType},
+    task::{TaskConfig, TaskType},
 };
 
 #[tokio::main]
 async fn main() {
-    // Build a scheduler with min/max period bounds
+    // Build a scheduler with default (unit) context
     let (handle, mut scheduler) = SchedulerBuilder::new()
         .min_period(Duration::from_millis(100))
         .max_period(Duration::from_secs(2))
         .build();
 
-    // Spawn the scheduler loop
+    // Spawn the scheduler loop - just poll and sleep!
     tokio::spawn(async move {
         loop {
-            // Poll the scheduler to get the next plan
-            let plan = scheduler.poll();
-
-            // Handle due tasks
-            for task in &plan.due_tasks {
-                println!("Executing task {:?}", task.id);
-                // ... your task logic here ...
-            }
-            
-            // Mark completed tasks
-            let completed: Vec<_> = plan.due_tasks.iter().map(|t| t.id).collect();
-            scheduler.mark_completed(&completed);
-
-            // Handle missed tasks
-            for miss in &plan.missed_tasks {
-                eprintln!("Task {:?} missed its window", miss.id);
-            }
-
-            // Sleep for calculated idle duration
-            if plan.idle_duration > Duration::ZERO {
-                tokio::time::sleep(plan.idle_duration).await;
-            }
+            let idle = scheduler.poll();
+            tokio::time::sleep(idle).await;
         }
     });
 
-    // Add a periodic task from the main thread
-    let task_id = handle
-        .add_task(TaskConfig {
+    // Add tasks with execution callbacks
+    handle.add_task(
+        TaskConfig {
             task_type: TaskType::Periodic {
                 period: Duration::from_secs(1),
                 window_before: Duration::from_millis(50),
                 window_after: Duration::from_millis(50),
             },
             priority: 0,
-            name: Some("my_task".into()),
+            name: Some("sensor".into()),
+            on_execute: None,
+            on_miss: None,
+        }
+        .with_executor(|exec, _ctx| {
+            println!("Sensor reading: drift={:?}", exec.drift);
+            // Your task logic here - keep it fast!
         })
-        .expect("Failed to add task");
+        .with_miss_handler(|miss, _ctx| {
+            eprintln!("Sensor task missed {} times!", miss.miss_count);
+        })
+    ).expect("Failed to add task");
+}
+```
 
-    println!("Scheduled task {:?}", task_id);
+**Key improvements:**
+- `poll()` returns just `Duration` (how long to sleep)
+- No `mark_completed()` calls needed
+- No `WakeupPlan` struct to inspect
+- Simple loop: `loop { sleep(scheduler.poll()).await; }`
+
+### Using Context for Shared State
+
+Define a custom context to share state between tasks and your application:
+
+```rust
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use syncopate::{
+    scheduler::SchedulerBuilder,
+    task::{TaskConfig, TaskType},
+};
+
+// Define your application context
+#[derive(Clone)]
+struct AppContext {
+    execution_count: Arc<Mutex<usize>>,
+    total_drift: Arc<Mutex<Duration>>,
+}
+
+#[tokio::main]
+async fn main() {
+    // Create the context
+    let context = AppContext {
+        execution_count: Arc::new(Mutex::new(0)),
+        total_drift: Arc::new(Mutex::new(Duration::ZERO)),
+    };
+
+    // Build scheduler with the context
+    let (handle, mut scheduler) = SchedulerBuilder::new()
+        .with_context(context.clone())
+        .build();
+
+    // Spawn the scheduler loop
+    tokio::spawn(async move {
+        loop {
+            let idle = scheduler.poll();
+            tokio::time::sleep(idle).await;
+        }
+    });
+
+    // Add tasks that use the context
+    handle.add_task(
+        TaskConfig::<AppContext> {
+            task_type: TaskType::Periodic {
+                period: Duration::from_secs(1),
+                window_before: Duration::from_millis(50),
+                window_after: Duration::from_millis(50),
+            },
+            priority: 0,
+            name: Some("counter".into()),
+            on_execute: None,
+            on_miss: None,
+        }
+        .with_executor(|exec, ctx| {
+            // Update shared state through the context
+            let mut count = ctx.execution_count.lock().unwrap();
+            *count += 1;
+
+            let mut drift = ctx.total_drift.lock().unwrap();
+            *drift += exec.drift;
+        })
+    ).expect("Failed to add task");
+
+    // Access context from your application
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let count = *context.execution_count.lock().unwrap();
+    println!("Total executions: {}", count);
+}
+```
+
+### Single-Threaded (Local) Usage
+
+For single-threaded async runtimes (like `tokio::task::spawn_local`), you can use `Rc<RefCell<T>>` instead of `Arc<Mutex<T>>`:
+
+```rust
+use std::rc::Rc;
+use std::cell::RefCell;
+use std::time::Duration;
+use syncopate::{
+    scheduler::SchedulerBuilder,
+    task::{TaskConfig, TaskType},
+};
+
+// Context with Rc/RefCell for single-threaded use
+struct LocalContext {
+    count: Rc<RefCell<usize>>,
+}
+
+#[tokio::main]
+async fn main() {
+    let local = tokio::task::LocalSet::new();
+
+    local.run_until(async move {
+        let context = LocalContext {
+            count: Rc::new(RefCell::new(0)),
+        };
+
+        // Use build_local() for single-threaded usage
+        let mut scheduler = SchedulerBuilder::new()
+            .with_context(context)
+            .build_local();
+
+        // Add tasks directly (no handle needed)
+        scheduler.add_task_local(
+            TaskConfig {
+                task_type: TaskType::Periodic {
+                    period: Duration::from_secs(1),
+                    window_before: Duration::from_millis(50),
+                    window_after: Duration::from_millis(50),
+                },
+                priority: 0,
+                name: Some("local_task".into()),
+                on_execute: None,
+                on_miss: None,
+            }
+            .with_executor(|_exec, ctx| {
+                *ctx.count.borrow_mut() += 1;
+            })
+        ).expect("Failed to add task");
+
+        // Spawn the scheduler loop locally
+        tokio::task::spawn_local(async move {
+            loop {
+                let idle = scheduler.poll();
+                tokio::time::sleep(idle).await;
+            }
+        });
+
+        // Your app logic here
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }).await;
 }
 ```
 
 ## Core Concepts
+
+### Callback-Based Execution
+
+Tasks execute automatically via callbacks during `poll()`:
+- **`on_execute`**: Called when the task is executed (receives `TaskExecution` with drift info and `&Context`)
+- **`on_miss`**: Called when the task misses its window (receives `TaskMiss` with miss count and `&Context`)
+- Callbacks are synchronous - keep them fast to avoid blocking the scheduler
+- For async work, spawn tasks from within the callback
+
+### Custom Contexts
+
+Define your own context type to share state:
+- **Multi-threaded**: Use `Arc<Mutex<T>>` or `Arc<RwLock<T>>`, requires `Send + Sync`
+- **Single-threaded**: Use `Rc<RefCell<T>>`, no `Send + Sync` required
+- **Flexible structure**: Define any fields you need (counters, queues, configuration, etc.)
+- **Zero overhead**: Unit context `()` when no shared state is needed
 
 ### Periodic Tasks
 
@@ -92,6 +240,8 @@ Tasks are defined with:
 - **window_before**: How early the task can execute before its ideal time
 - **window_after**: How late the task can execute after its ideal time
 - **priority**: Lower values = higher priority for conflict resolution
+- **on_execute**: Optional callback for automatic execution (receives `TaskExecution` and `&Context`)
+- **on_miss**: Optional callback for deadline violations (receives `TaskMiss` and `&Context`)
 
 ### Scheduler Bounds
 
@@ -108,13 +258,59 @@ Tasks are classified based on actual vs. ideal timing:
 - **Late**: Executed after `window_after`
 - **Missed**: Never executed within the window
 
+## API Design
+
+### Multi-Threaded Usage (with Handle)
+
+```rust
+let (handle, mut scheduler) = SchedulerBuilder::new()
+    .with_context(context.clone())
+    .build();
+
+// Add tasks from any thread via the handle
+handle.add_task(config)?;
+
+// Run scheduler loop
+loop {
+    let idle = scheduler.poll();
+    tokio::time::sleep(idle).await;
+}
+```
+
+**Requirements:**
+- Context must implement `Send + Sync + 'static`
+- Callbacks must be `Send + Sync`
+- Use `Arc<Mutex<T>>` for shared state
+
+### Single-Threaded Usage (no Handle)
+
+```rust
+let mut scheduler = SchedulerBuilder::new()
+    .with_context(context)
+    .build_local();
+
+// Add tasks directly
+scheduler.add_task_local(config)?;
+
+// Run scheduler loop
+loop {
+    let idle = scheduler.poll();
+    tokio::time::sleep(idle).await;
+}
+```
+
+**Benefits:**
+- No `Send + Sync` requirements
+- Can use `Rc<RefCell<T>>`
+- Simpler for single-threaded runtimes
+
 ## Architecture
 
 Syncopate uses a poll-based design:
 
 1. **SchedulerLoop**: Core scheduling logic, single-threaded owner
-2. **SchedulerHandle**: Cloneable handle for adding tasks from any thread
-3. **WakeupPlan**: Output of each poll containing due tasks and recommended idle duration
+2. **SchedulerHandle**: Cloneable handle for adding tasks from any thread (optional)
+3. **Context**: User-defined type shared between tasks and application
 4. **BinaryHeap**: Tasks ordered by deadline for efficient scheduling
 
 ## Benchmarks
@@ -124,6 +320,8 @@ Run the benchmark example to measure timing accuracy:
 ```bash
 cargo run --example benchmark -- --duration 10s --task-period 1s
 ```
+
+The benchmark demonstrates using context to collect execution statistics.
 
 ## Planned Features
 

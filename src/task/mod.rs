@@ -1,5 +1,7 @@
+mod callback;
 mod config;
 
+pub use callback::*;
 pub use config::*;
 use std::num::NonZeroU64;
 use std::time::Duration;
