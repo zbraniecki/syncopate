@@ -76,6 +76,7 @@ pub struct SchedulerLoop<Ctx = ()> {
     pub(crate) next_generation: u32,
     pub(crate) min_period: Duration,
     pub(crate) max_period: Duration,
+    pub(crate) sleep_compensation: Duration,
     pub(crate) context: Ctx,
 }
 
@@ -166,8 +167,16 @@ impl<Ctx> SchedulerLoop<Ctx> {
         }
 
         // Compute idle duration
+        // Target the ideal deadline minus sleep_compensation to account for
+        // OS/runtime sleep overshoot. This way the actual wakeup lands closer
+        // to the ideal time. Clamp to window_start at the earliest — waking
+        // before the window would just cause an extra poll cycle.
         if let Some(next_task) = self.tasks.peek() {
-            let next_wakeup = next_task.window_start();
+            let compensated = next_task
+                .next_deadline
+                .checked_sub(self.sleep_compensation)
+                .unwrap_or(next_task.next_deadline);
+            let next_wakeup = compensated.max(next_task.window_start());
             next_wakeup.saturating_duration_since(now)
         } else {
             // When no tasks are scheduled, sleep for max_period

@@ -5,6 +5,7 @@ use std::{collections::BinaryHeap, time::Duration};
 pub struct SchedulerBuilder<Ctx = ()> {
     min_period: Duration,
     max_period: Duration,
+    sleep_compensation: Duration,
     context: Ctx,
 }
 
@@ -20,6 +21,7 @@ impl SchedulerBuilder<()> {
         Self {
             min_period: Duration::from_millis(1),
             max_period: Duration::from_secs(3600),
+            sleep_compensation: Duration::ZERO,
             context: (),
         }
     }
@@ -38,6 +40,17 @@ impl<Ctx> SchedulerBuilder<Ctx> {
         self
     }
 
+    /// Set sleep compensation to account for OS/runtime sleep overshoot.
+    ///
+    /// The scheduler will request wakeups this much earlier than the ideal
+    /// deadline, so that the actual wakeup (after OS overshoot) lands closer
+    /// to the target time. For example, if tokio typically overshoots by 2ms,
+    /// setting this to 2ms will improve timing accuracy.
+    pub fn sleep_compensation(mut self, duration: Duration) -> Self {
+        self.sleep_compensation = duration;
+        self
+    }
+
     /// Provide a custom context that will be passed to all task callbacks.
     ///
     /// The context can be used to share state between tasks and the application.
@@ -48,6 +61,7 @@ impl<Ctx> SchedulerBuilder<Ctx> {
         SchedulerBuilder {
             min_period: self.min_period,
             max_period: self.max_period,
+            sleep_compensation: self.sleep_compensation,
             context,
         }
     }
@@ -73,6 +87,7 @@ impl<Ctx> SchedulerBuilder<Ctx> {
             next_generation: 1,
             min_period: self.min_period,
             max_period: self.max_period,
+            sleep_compensation: self.sleep_compensation,
             context: self.context,
         };
 
@@ -93,6 +108,7 @@ impl<Ctx> SchedulerBuilder<Ctx> {
             next_generation: 1,
             min_period: self.min_period,
             max_period: self.max_period,
+            sleep_compensation: self.sleep_compensation,
             context: self.context,
         }
     }

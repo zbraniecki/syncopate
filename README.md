@@ -325,32 +325,122 @@ The benchmark demonstrates using context to collect execution statistics.
 
 ## Planned Features
 
-Planned features include:
+The current implementation provides core callback-based scheduling with context support. Future enhancements are planned based on the [High-Level Design document](scheduler-hld.md):
 
 ### Core Enhancements
+
 - [ ] **One-Shot Tasks**: Single-execution tasks with monotonic or wall-clock deadlines
-- [ ] **Task Dependencies**: Express "task B must run after task A" with DAG-based scheduling
-- [ ] **Task Groups**: Atomic execution - all tasks in a group appear in `due_tasks` together
-- [ ] **Dynamic Priority Adjustment**: User-defined priority functions and adaptive priority based on miss rates
-- [ ] **Task Cancellation**: Graceful and immediate task termination
+  - `TaskType::OneShot` with `Deadline::Monotonic(Instant)` and `Deadline::WallClock(SystemTime)`
+  - Automatic removal after execution
+  - Clock-jump detection for wall-clock deadlines
+
+- [ ] **Priority Lanes**: Multi-level priority queues with EDF within each level
+  - Configurable number of priority levels
+  - Optional priority aging to prevent starvation
+  - Priority-first, deadline-second scheduling
+
+- [ ] **Task Lifecycle Management**: Enhanced task control
+  - Pause/resume tasks without removing them
+  - Modify task configuration via `TaskPatch`
+  - Task removal by ID
+
+- [ ] **Task Dependencies**: Express "task B must run after task A"
+  - DAG-based scheduling within a single poll cycle
+  - Dependency validation at task creation
+
+- [ ] **Task Groups**: Atomic execution
+  - All tasks in a group fire together or not at all
+  - Useful for coordinated multi-task operations
 
 ### Advanced Scheduling
-- [ ] **Efficiency Tier**: Coalescing algorithm for power optimization (weighted interval sweep)
-- [ ] **Hierarchical Sub-Schedulers**: Parent-child scheduler relationships with period constraints
-- [ ] **Period Negotiation**: Request/response protocol for global period optimization
-- [ ] **Wall-Clock Support**: `Deadline::WallClock(SystemTime)` resolution with clock-jump detection
+
+- [ ] **Two-Tier Architecture**: Separate precision and efficiency modes
+  - **Precision Tier**: O(log n) EDF peek for sub-millisecond scheduling (10-100 μs periods)
+  - **Efficiency Tier**: O(n log n) weighted interval coalescing for power-saving (1 ms+ periods)
+  - Tier selection at scheduler construction
+
+- [ ] **Task Coalescing** (Efficiency Tier): Batch tasks within overlapping windows
+  - Weighted interval sweep algorithm (O(n log n))
+  - Priority-aware coalescing decisions
+  - Minimize wakeups for power management
+
+- [ ] **Hierarchical Sub-Schedulers**: Parent-child scheduler relationships
+  - Tree of schedulers with period constraints (child period ≥ parent period)
+  - Task isolation between scheduler levels
+  - Multi-level hierarchy support
+
+- [ ] **Period Negotiation**: Sub-schedulers can request parent period changes
+  - Request/response protocol via channels
+  - Global period recomputation using GCD on integer nanoseconds
+  - Per-child allow/deny policies
 
 ### Observability & Integration
-- [ ] **Tracing Integration**: `tracing` crate for observability with scheduling spans
-- [ ] **Metrics Export**: Prometheus metrics and Grafana dashboards
-- [ ] **Energy Profiling**: Measure actual power consumption per coalescing strategy
-- [ ] **Configuration Files**: YAML/JSON task definitions
+
+- [ ] **Tracing Integration**: `tracing` crate for observability
+  - Scheduling spans for each poll cycle
+  - Task execution and miss events
+  - Performance instrumentation
+
+- [ ] **Metrics Export**: Production monitoring
+  - Prometheus metrics endpoint
+  - Grafana dashboards
+  - Key metrics: task execution counts, miss rates, coalescing efficiency, idle duration
+
+- [ ] **Statistics API**: Runtime performance visibility
+  - `SchedulerStats` type with total tasks, polls, misses
+  - Average tasks per wakeup (coalescing efficiency)
+  - Current computed period (GCD of task periods)
+
+- [ ] **Energy Profiling**: Measure actual power consumption
+  - Per-coalescing-strategy power usage
+  - Hardware-specific optimizations
+  - Integration with system power APIs
 
 ### Performance & Platform Support
-- [ ] **no_std Support**: Target embedded systems (Cortex-M) without `std::time`
-- [ ] **Arena Allocator**: Avoid per-task heap allocation for better performance
-- [ ] **SIMD Coalescing**: Vectorize interval sweep for very large task sets (10,000+)
-- [ ] **Distributed Scheduling**: Multi-process coordination via shared memory
+
+- [ ] **no_std Support**: Target embedded systems
+  - Remove `std::time` dependency
+  - Generic clock abstraction
+  - Support for Cortex-M and other embedded platforms
+  - Arena allocator to avoid heap allocation
+
+- [ ] **Runtime Abstraction**: Clock and Sleeper traits
+  - `Clock` trait for time sources (testing, embedded)
+  - `Sleeper` trait for async/blocking sleep strategies
+  - Feature flags: `tokio-sleep`, `std-sleep`
+
+- [ ] **SIMD Coalescing**: Vectorize interval sweep
+  - For very large task sets (10,000+ tasks)
+  - Platform-specific optimizations (ARM NEON, x86 AVX2)
+
+- [ ] **Arena Allocator**: Avoid per-task heap allocation
+  - Indexed storage with generation counters
+  - Improved cache locality
+  - Reduced memory fragmentation
+
+- [ ] **Distributed Scheduling**: Multi-process coordination
+  - Shared memory communication
+  - Distributed coalescing algorithms
+  - Process-level hierarchy
+
+### Research & Verification
+
+- [ ] **Dynamic Priority Adjustment**: Adaptive scheduling
+  - User-defined priority functions
+  - Adaptive priority based on miss rates
+  - Machine learning integration for workload prediction
+
+- [ ] **Configuration Files**: YAML/JSON task definitions
+  - Declarative task specification
+  - Hot-reload support
+  - Schema validation
+
+- [ ] **Formal Verification**: Mathematical correctness proofs
+  - TLA+ model of coalescing algorithm
+  - Prove no-starvation property with aging enabled
+  - Model checking for deadlock freedom
+
+For detailed design and implementation roadmap, see [scheduler-hld.md](scheduler-hld.md).
 
 ## License
 
