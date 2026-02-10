@@ -135,7 +135,8 @@ pub fn compare_benchmarks(
     // Helper to determine winner by comparing values (lower is better)
     let compare_lower_better = |syncopate_val: f64, system_val: f64| -> Winner {
         let diff_percent = ((syncopate_val - system_val) / system_val).abs() * 100.0;
-        if diff_percent > 5.0 { // More than 5% difference
+        if diff_percent > 5.0 {
+            // More than 5% difference
             if syncopate_val < system_val {
                 Winner::Syncopate
             } else {
@@ -153,7 +154,7 @@ pub fn compare_benchmarks(
         metric_name: "avg_drift",
         syncopate_value: syncopate.avg_drift.abs(),
         system_value: system.avg_drift.abs(),
-        p_value: 0.0, // Not applicable for single aggregate values
+        p_value: 0.0,     // Not applicable for single aggregate values
         effect_size: 0.0, // Not applicable for single aggregate values
         winner,
     });
@@ -206,7 +207,10 @@ pub fn compare_benchmarks(
     });
 
     // 5. Scheduler overhead percentage (lower is better - less time in scheduler)
-    let winner = compare_lower_better(syncopate.scheduler_overhead_percent, system.scheduler_overhead_percent);
+    let winner = compare_lower_better(
+        syncopate.scheduler_overhead_percent,
+        system.scheduler_overhead_percent,
+    );
 
     results.push(ComparisonResult {
         metric_name: "scheduler_overhead_percent",

@@ -1,8 +1,8 @@
 use crate::{
-    scheduler::{error::SchedulerError, Command},
+    scheduler::{Command, error::SchedulerError},
     task::{TaskConfig, TaskId},
 };
-use crossbeam::channel::{bounded, Sender};
+use crossbeam::channel::{Sender, bounded};
 
 /// Cloneable, Send + Sync handle for submitting commands to the scheduler.
 ///

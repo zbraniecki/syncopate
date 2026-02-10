@@ -1,13 +1,15 @@
 use clap::Parser;
-use comfy_table::{Table, ContentArrangement};
+use comfy_table::{ContentArrangement, Table};
 use std::time::Duration;
 
 mod export;
 mod metrics;
 mod platform;
+mod raw_timers;
 mod scenarios;
 mod statistics;
 mod syncopate_runner;
+mod syncopate_std_runner;
 mod visualize;
 
 use metrics::BenchmarkResults;
@@ -75,6 +77,14 @@ struct Args {
     /// Show ASCII visualizations (histogram, CDF, time-series)
     #[arg(long)]
     visualize: bool,
+
+    /// Compare all timer mechanisms (raw std, raw tokio, syncopate+std, syncopate+tokio)
+    #[arg(long)]
+    compare_timers: bool,
+
+    /// Sleep mechanism for syncopate: 'std' or 'tokio' (default: tokio)
+    #[arg(long, value_name = "MECHANISM", default_value = "tokio")]
+    sleep_mechanism: String,
 }
 
 fn parse_duration_with_units(s: &str) -> Result<Duration, String> {
@@ -147,6 +157,12 @@ async fn main() {
 
     let args = Args::parse();
 
+    // Handle timer comparison
+    if args.compare_timers {
+        run_timer_comparison(&args).await;
+        return;
+    }
+
     // Handle stress test suite
     if args.stress_test {
         run_stress_test_suite(&args).await;
@@ -160,55 +176,60 @@ async fn main() {
     }
 
     // Handle manual configuration
-    let duration_str = args.duration.as_ref()
+    let duration_str = args
+        .duration
+        .as_ref()
         .expect("--duration is required when not using --scenario or --stress-test");
 
-    let duration = parse_duration_with_units(duration_str)
-        .unwrap_or_else(|e| {
-            eprintln!("Error: invalid duration '{}': {}", duration_str, e);
-            std::process::exit(1);
-        });
+    let duration = parse_duration_with_units(duration_str).unwrap_or_else(|e| {
+        eprintln!("Error: invalid duration '{}': {}", duration_str, e);
+        std::process::exit(1);
+    });
 
-    let task_period = parse_duration_with_units(&args.task_period)
-        .unwrap_or_else(|e| {
-            eprintln!("Error: invalid task-period '{}': {}", args.task_period, e);
-            std::process::exit(1);
-        });
+    let task_period = parse_duration_with_units(&args.task_period).unwrap_or_else(|e| {
+        eprintln!("Error: invalid task-period '{}': {}", args.task_period, e);
+        std::process::exit(1);
+    });
 
-    let min_period = parse_duration_with_units(&args.min_period)
-        .unwrap_or_else(|e| {
-            eprintln!("Error: invalid min-period '{}': {}", args.min_period, e);
-            std::process::exit(1);
-        });
+    let min_period = parse_duration_with_units(&args.min_period).unwrap_or_else(|e| {
+        eprintln!("Error: invalid min-period '{}': {}", args.min_period, e);
+        std::process::exit(1);
+    });
 
-    let max_period = parse_duration_with_units(&args.max_period)
-        .unwrap_or_else(|e| {
-            eprintln!("Error: invalid max-period '{}': {}", args.max_period, e);
-            std::process::exit(1);
-        });
+    let max_period = parse_duration_with_units(&args.max_period).unwrap_or_else(|e| {
+        eprintln!("Error: invalid max-period '{}': {}", args.max_period, e);
+        std::process::exit(1);
+    });
 
-    let window_before = parse_duration_with_units(&args.window_before)
-        .unwrap_or_else(|e| {
-            eprintln!("Error: invalid window-before '{}': {}", args.window_before, e);
-            std::process::exit(1);
-        });
+    let window_before = parse_duration_with_units(&args.window_before).unwrap_or_else(|e| {
+        eprintln!(
+            "Error: invalid window-before '{}': {}",
+            args.window_before, e
+        );
+        std::process::exit(1);
+    });
 
-    let window_after = parse_duration_with_units(&args.window_after)
-        .unwrap_or_else(|e| {
-            eprintln!("Error: invalid window-after '{}': {}", args.window_after, e);
-            std::process::exit(1);
-        });
+    let window_after = parse_duration_with_units(&args.window_after).unwrap_or_else(|e| {
+        eprintln!("Error: invalid window-after '{}': {}", args.window_after, e);
+        std::process::exit(1);
+    });
 
-    let sleep_compensation = parse_duration_with_units(&args.sleep_compensation)
-        .unwrap_or_else(|e| {
-            eprintln!("Error: invalid sleep-compensation '{}': {}", args.sleep_compensation, e);
+    let sleep_compensation =
+        parse_duration_with_units(&args.sleep_compensation).unwrap_or_else(|e| {
+            eprintln!(
+                "Error: invalid sleep-compensation '{}': {}",
+                args.sleep_compensation, e
+            );
             std::process::exit(1);
         });
 
     // Validate system argument
     let system = args.system.to_lowercase();
     if system != "system" && system != "syncopate" {
-        eprintln!("Error: invalid system '{}'. Must be 'system' or 'syncopate'", args.system);
+        eprintln!(
+            "Error: invalid system '{}'. Must be 'system' or 'syncopate'",
+            args.system
+        );
         std::process::exit(1);
     }
 
@@ -221,7 +242,10 @@ async fn main() {
         .add_row(vec!["Min Period:", &format!("{:?}", min_period)])
         .add_row(vec!["Max Period:", &format!("{:?}", max_period)])
         .add_row(vec!["Timers:", &args.timers.to_string()])
-        .add_row(vec!["Window:", &format!("[-{:?}, +{:?}]", window_before, window_after)]);
+        .add_row(vec![
+            "Window:",
+            &format!("[-{:?}, +{:?}]", window_before, window_after),
+        ]);
 
     if args.compare {
         table.add_row(vec!["Mode:", "Compare (System vs Syncopate)"]);
@@ -241,7 +265,8 @@ async fn main() {
             args.timers,
             window_before,
             window_after,
-        ).await;
+        )
+        .await;
 
         println!("\nRunning syncopate scheduler benchmark...");
         let syncopate_results = syncopate_runner::run_benchmark(
@@ -253,10 +278,19 @@ async fn main() {
             window_before,
             window_after,
             sleep_compensation,
-        ).await;
+        )
+        .await;
 
         // Handle output format
-        handle_output(&args, &system_results, Some(&syncopate_results), None, task_period, window_before, window_after);
+        handle_output(
+            &args,
+            &system_results,
+            Some(&syncopate_results),
+            None,
+            task_period,
+            window_before,
+            window_after,
+        );
     } else if system == "system" {
         // Run only system benchmark
         println!("Running system (native) timer benchmark...");
@@ -266,8 +300,17 @@ async fn main() {
             args.timers,
             window_before,
             window_after,
-        ).await;
-        handle_output(&args, &results, None, None, task_period, window_before, window_after);
+        )
+        .await;
+        handle_output(
+            &args,
+            &results,
+            None,
+            None,
+            task_period,
+            window_before,
+            window_after,
+        );
     } else {
         // Run only syncopate benchmark (default)
         println!("Running syncopate scheduler benchmark...");
@@ -280,18 +323,29 @@ async fn main() {
             window_before,
             window_after,
             sleep_compensation,
-        ).await;
-        handle_output(&args, &results, None, None, task_period, window_before, window_after);
+        )
+        .await;
+        handle_output(
+            &args,
+            &results,
+            None,
+            None,
+            task_period,
+            window_before,
+            window_after,
+        );
     }
 }
 
 async fn run_scenario(args: &Args, scenario_name: &str) {
-    let scenario = scenarios::BenchmarkScenario::get(scenario_name)
-        .unwrap_or_else(|| {
-            eprintln!("Error: unknown scenario '{}'. Available scenarios:", scenario_name);
-            eprintln!("  light, medium, heavy, extreme, mixed-frequency, burst, coalescing-test");
-            std::process::exit(1);
-        });
+    let scenario = scenarios::BenchmarkScenario::get(scenario_name).unwrap_or_else(|| {
+        eprintln!(
+            "Error: unknown scenario '{}'. Available scenarios:",
+            scenario_name
+        );
+        eprintln!("  light, medium, heavy, extreme, mixed-frequency, burst, coalescing-test");
+        std::process::exit(1);
+    });
 
     println!("╔════════════════════════════════════════════════╗");
     println!("║ Running Scenario: {:<29}║", scenario.name);
@@ -317,7 +371,8 @@ async fn run_scenario(args: &Args, scenario_name: &str) {
                 timer_config.count,
                 timer_config.window_before,
                 timer_config.window_after,
-            ).await;
+            )
+            .await;
             system_results = Some(results);
         }
 
@@ -334,7 +389,8 @@ async fn run_scenario(args: &Args, scenario_name: &str) {
                 timer_config.window_before,
                 timer_config.window_after,
                 sleep_compensation,
-            ).await;
+            )
+            .await;
             syncopate_results = Some(results);
         }
 
@@ -360,7 +416,8 @@ async fn run_scenario(args: &Args, scenario_name: &str) {
                     timer_config.count,
                     timer_config.window_before,
                     timer_config.window_after,
-                ).await
+                )
+                .await
             } else {
                 syncopate_runner::run_benchmark(
                     scenario.duration,
@@ -371,7 +428,8 @@ async fn run_scenario(args: &Args, scenario_name: &str) {
                     timer_config.window_before,
                     timer_config.window_after,
                     sleep_compensation,
-                ).await
+                )
+                .await
             };
 
             handle_output(
@@ -415,7 +473,9 @@ fn handle_output(
 ) {
     match args.output_format.as_str() {
         "json" => {
-            let output_path = args.output_file.as_ref()
+            let output_path = args
+                .output_file
+                .as_ref()
                 .expect("--output-file is required for JSON format");
 
             let config = export::BenchmarkConfig {
@@ -426,31 +486,41 @@ fn handle_output(
                 task_period_us: task_period.as_micros() as u64,
             };
 
-            export::export_json(results, &config, output_path)
-                .unwrap_or_else(|e| {
-                    eprintln!("Error exporting JSON: {}", e);
-                    std::process::exit(1);
-                });
+            export::export_json(results, &config, output_path).unwrap_or_else(|e| {
+                eprintln!("Error exporting JSON: {}", e);
+                std::process::exit(1);
+            });
 
             println!("Results exported to: {}", output_path);
-        },
+        }
         "csv" => {
-            let output_path = args.output_file.as_ref()
+            let output_path = args
+                .output_file
+                .as_ref()
                 .expect("--output-file is required for CSV format");
 
-            export::export_csv(results, output_path)
-                .unwrap_or_else(|e| {
-                    eprintln!("Error exporting CSV: {}", e);
-                    std::process::exit(1);
-                });
+            export::export_csv(results, output_path).unwrap_or_else(|e| {
+                eprintln!("Error exporting CSV: {}", e);
+                std::process::exit(1);
+            });
 
             println!("Results exported to: {}", output_path);
-        },
+        }
         _ => {
             // Print results to console
             if let Some(syncopate) = syncopate_results {
-                results.print("System (Native) Timer", task_period, window_before, window_after);
-                syncopate.print("Syncopate Scheduler", task_period, window_before, window_after);
+                results.print(
+                    "System (Native) Timer",
+                    task_period,
+                    window_before,
+                    window_after,
+                );
+                syncopate.print(
+                    "Syncopate Scheduler",
+                    task_period,
+                    window_before,
+                    window_after,
+                );
 
                 // Print statistical comparison
                 print_statistical_comparison(results, syncopate);
@@ -482,21 +552,32 @@ fn handle_output(
 }
 
 fn print_statistical_comparison(system: &BenchmarkResults, syncopate: &BenchmarkResults) {
-    use comfy_table::{Table, ContentArrangement, Cell, CellAlignment};
+    use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
 
     let comparisons = statistics::compare_benchmarks(syncopate, system);
 
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);
-    table.set_header(vec!["Performance Comparison", "Syncopate", "System", "Diff"]);
+    table.set_header(vec![
+        "Performance Comparison",
+        "Syncopate",
+        "System",
+        "Diff",
+    ]);
 
     let mut wins = 0;
     let mut losses = 0;
 
     for comp in &comparisons {
         let winner_symbol = match comp.winner {
-            statistics::Winner::Syncopate => { wins += 1; "✓" },
-            statistics::Winner::System => { losses += 1; "✗" },
+            statistics::Winner::Syncopate => {
+                wins += 1;
+                "✓"
+            }
+            statistics::Winner::System => {
+                losses += 1;
+                "✗"
+            }
             statistics::Winner::Tie => "≈",
         };
 
@@ -518,17 +599,26 @@ fn print_statistical_comparison(system: &BenchmarkResults, syncopate: &Benchmark
 
     let ties = comparisons.len() - wins - losses;
     let verdict = if wins > losses {
-        format!("Verdict: {} wins, {} losses, {} ties - Syncopate is better", wins, losses, ties)
+        format!(
+            "Verdict: {} wins, {} losses, {} ties - Syncopate is better",
+            wins, losses, ties
+        )
     } else if wins == losses {
-        format!("Verdict: {} wins, {} losses, {} ties - comparable", wins, losses, ties)
+        format!(
+            "Verdict: {} wins, {} losses, {} ties - comparable",
+            wins, losses, ties
+        )
     } else {
-        format!("Verdict: {} wins, {} losses, {} ties - System is better", wins, losses, ties)
+        format!(
+            "Verdict: {} wins, {} losses, {} ties - System is better",
+            wins, losses, ties
+        )
     };
     println!("{}", verdict);
 }
 
 fn print_pass_fail_scorecard(results: &BenchmarkResults, scenario_name: &str) {
-    use comfy_table::{Table, ContentArrangement, Cell, CellAlignment};
+    use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
 
     let criteria = scenarios::AcceptanceCriteria::for_scenario(scenario_name);
 
@@ -559,31 +649,36 @@ fn print_pass_fail_scorecard(results: &BenchmarkResults, scenario_name: &str) {
     table.add_row(vec![
         Cell::new("Avg Drift"),
         Cell::new(format!("{:.1}μs", results.avg_drift.abs())).set_alignment(CellAlignment::Right),
-        Cell::new(format!("< {:.0}μs", criteria.max_avg_drift_us)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("< {:.0}μs", criteria.max_avg_drift_us))
+            .set_alignment(CellAlignment::Right),
         Cell::new(pass_fail(avg_drift_pass)),
     ]);
     table.add_row(vec![
         Cell::new("P99 Drift"),
         Cell::new(format!("{:.1}μs", results.p99_drift.abs())).set_alignment(CellAlignment::Right),
-        Cell::new(format!("< {:.0}μs", criteria.max_p99_drift_us)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("< {:.0}μs", criteria.max_p99_drift_us))
+            .set_alignment(CellAlignment::Right),
         Cell::new(pass_fail(p99_drift_pass)),
     ]);
     table.add_row(vec![
         Cell::new("On-Time"),
         Cell::new(format!("{:.1}%", on_time_percent)).set_alignment(CellAlignment::Right),
-        Cell::new(format!("> {:.0}%", criteria.min_on_time_percent)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("> {:.0}%", criteria.min_on_time_percent))
+            .set_alignment(CellAlignment::Right),
         Cell::new(pass_fail(on_time_pass)),
     ]);
     table.add_row(vec![
         Cell::new("Missed"),
         Cell::new(format!("{:.1}%", missed_percent)).set_alignment(CellAlignment::Right),
-        Cell::new(format!("< {:.1}%", criteria.max_missed_percent)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("< {:.1}%", criteria.max_missed_percent))
+            .set_alignment(CellAlignment::Right),
         Cell::new(pass_fail(missed_pass)),
     ]);
     table.add_row(vec![
         Cell::new("CPU Usage"),
         Cell::new(format!("{:.1}%", cpu_percent)).set_alignment(CellAlignment::Right),
-        Cell::new(format!("< {:.0}%", criteria.max_cpu_percent)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("< {:.0}%", criteria.max_cpu_percent))
+            .set_alignment(CellAlignment::Right),
         Cell::new(pass_fail(cpu_pass)),
     ]);
 
@@ -593,59 +688,306 @@ fn print_pass_fail_scorecard(results: &BenchmarkResults, scenario_name: &str) {
 fn print_visualizations(results: &BenchmarkResults) {
     // Collect drift values (need to extract from results)
     // For now, use synthetic data based on statistics
-    println!("\n{}", visualize::render_histogram(
-        &[results.avg_drift], // Would need actual per-execution data
-        "Drift Distribution",
-        "μs"
-    ));
+    println!(
+        "\n{}",
+        visualize::render_histogram(
+            &[results.avg_drift], // Would need actual per-execution data
+            "Drift Distribution",
+            "μs"
+        )
+    );
 
-    println!("\n{}", visualize::render_cdf(
-        &[results.avg_drift, results.p50_drift, results.p95_drift, results.p99_drift],
-        "Cumulative Distribution",
-        "μs"
-    ));
+    println!(
+        "\n{}",
+        visualize::render_cdf(
+            &[
+                results.avg_drift,
+                results.p50_drift,
+                results.p95_drift,
+                results.p99_drift
+            ],
+            "Cumulative Distribution",
+            "μs"
+        )
+    );
+}
+
+async fn run_timer_comparison(args: &Args) {
+    use comfy_table::{ContentArrangement, Table};
+
+    let duration = parse_duration_with_units(args.duration.as_ref().unwrap_or(&"10s".to_string()))
+        .unwrap_or(Duration::from_secs(10));
+
+    let task_period = parse_duration_with_units(&args.task_period).unwrap();
+    let min_period = parse_duration_with_units(&args.min_period).unwrap();
+    let max_period = parse_duration_with_units(&args.max_period).unwrap();
+    let window_before = parse_duration_with_units(&args.window_before).unwrap();
+    let window_after = parse_duration_with_units(&args.window_after).unwrap();
+    let sleep_compensation = parse_duration_with_units(&args.sleep_compensation).unwrap();
+
+    let mut config_table = Table::new();
+    config_table
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec!["Timer Implementation Comparison", ""])
+        .add_row(vec!["Duration:", &format!("{:?}", duration)])
+        .add_row(vec!["Period:", &format!("{:?}", task_period)])
+        .add_row(vec![
+            "Window:",
+            &format!("[-{:?}, +{:?}]", window_before, window_after),
+        ]);
+
+    println!("{}", config_table);
+    println!();
+
+    // Run all four benchmarks
+    println!("Running 4 timer implementations...\n");
+
+    // 1. Raw std::thread::sleep
+    let raw_std = tokio::task::spawn_blocking(move || {
+        raw_timers::run_std_sleep_benchmark(duration, task_period, window_before, window_after)
+    })
+    .await
+    .unwrap();
+
+    // 2. Raw tokio::time::sleep
+    let raw_tokio =
+        raw_timers::run_tokio_sleep_benchmark(duration, task_period, window_before, window_after)
+            .await;
+
+    // 3. Syncopate with std::thread::sleep
+    let syncopate_std = tokio::task::spawn_blocking(move || {
+        syncopate_std_runner::run_benchmark(
+            duration,
+            task_period,
+            min_period,
+            max_period,
+            1, // single timer for fair comparison
+            window_before,
+            window_after,
+            sleep_compensation,
+        )
+    })
+    .await
+    .unwrap();
+
+    // 4. Syncopate with tokio::time::sleep
+    let syncopate_tokio = syncopate_runner::run_benchmark(
+        duration,
+        task_period,
+        min_period,
+        max_period,
+        1, // single timer for fair comparison
+        window_before,
+        window_after,
+        sleep_compensation,
+    )
+    .await;
+
+    // Print comparison table
+    print_timer_comparison_table(&raw_std, &raw_tokio, &syncopate_std, &syncopate_tokio);
+}
+
+fn print_timer_comparison_table(
+    raw_std: &BenchmarkResults,
+    raw_tokio: &BenchmarkResults,
+    syncopate_std: &BenchmarkResults,
+    syncopate_tokio: &BenchmarkResults,
+) {
+    use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
+
+    let mut table = Table::new();
+    table.set_content_arrangement(ContentArrangement::Dynamic);
+    table.set_header(vec![
+        "Metric",
+        "Raw Std",
+        "Raw Tokio",
+        "Syn+Std",
+        "Syn+Tokio",
+        "Unit",
+    ]);
+
+    // Total Executions
+    table.add_row(vec![
+        Cell::new("Total Executions"),
+        Cell::new(raw_std.total_executions.to_string()).set_alignment(CellAlignment::Right),
+        Cell::new(raw_tokio.total_executions.to_string()).set_alignment(CellAlignment::Right),
+        Cell::new(syncopate_std.total_executions.to_string()).set_alignment(CellAlignment::Right),
+        Cell::new(syncopate_tokio.total_executions.to_string()).set_alignment(CellAlignment::Right),
+        Cell::new(""),
+    ]);
+
+    // Baseline Delta (raw median overshoot before correction)
+    table.add_row(vec![
+        Cell::new("Baseline Delta"),
+        Cell::new(format!("{:+}", raw_std.baseline_delta)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:+}", raw_tokio.baseline_delta)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:+}", syncopate_std.baseline_delta))
+            .set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:+}", syncopate_tokio.baseline_delta))
+            .set_alignment(CellAlignment::Right),
+        Cell::new("μs"),
+    ]);
+
+    // Avg Abs Drift
+    table.add_row(vec![
+        Cell::new("Avg Abs Drift"),
+        Cell::new(format!("{:.1}", raw_std.avg_drift.abs())).set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:.1}", raw_tokio.avg_drift.abs())).set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:.1}", syncopate_std.avg_drift.abs()))
+            .set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:.1}", syncopate_tokio.avg_drift.abs()))
+            .set_alignment(CellAlignment::Right),
+        Cell::new("μs"),
+    ]);
+
+    // Avg Drift (signed)
+    table.add_row(vec![
+        Cell::new("Avg Drift (signed)"),
+        Cell::new(format!("{:+.1}", raw_std.avg_drift)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:+.1}", raw_tokio.avg_drift)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:+.1}", syncopate_std.avg_drift)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:+.1}", syncopate_tokio.avg_drift)).set_alignment(CellAlignment::Right),
+        Cell::new("μs"),
+    ]);
+
+    // Std Dev
+    table.add_row(vec![
+        Cell::new("Std Dev"),
+        Cell::new(format!("{:.1}", raw_std.stddev_drift)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:.1}", raw_tokio.stddev_drift)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:.1}", syncopate_std.stddev_drift)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:.1}", syncopate_tokio.stddev_drift))
+            .set_alignment(CellAlignment::Right),
+        Cell::new("μs"),
+    ]);
+
+    // P99 Drift
+    table.add_row(vec![
+        Cell::new("P99 Drift"),
+        Cell::new(format!("{:.1}", raw_std.p99_drift.abs())).set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:.1}", raw_tokio.p99_drift.abs())).set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:.1}", syncopate_std.p99_drift.abs()))
+            .set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:.1}", syncopate_tokio.p99_drift.abs()))
+            .set_alignment(CellAlignment::Right),
+        Cell::new("μs"),
+    ]);
+
+    // CPU Usage
+    let raw_std_cpu_pct = (raw_std.cpu_time.as_secs_f64() / raw_std.actual_duration_secs) * 100.0;
+    let raw_tokio_cpu_pct =
+        (raw_tokio.cpu_time.as_secs_f64() / raw_tokio.actual_duration_secs) * 100.0;
+    let syncopate_std_cpu_pct =
+        (syncopate_std.cpu_time.as_secs_f64() / syncopate_std.actual_duration_secs) * 100.0;
+    let syncopate_tokio_cpu_pct =
+        (syncopate_tokio.cpu_time.as_secs_f64() / syncopate_tokio.actual_duration_secs) * 100.0;
+
+    table.add_row(vec![
+        Cell::new("CPU Usage"),
+        Cell::new(format!("{:.2}", raw_std_cpu_pct)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:.2}", raw_tokio_cpu_pct)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:.2}", syncopate_std_cpu_pct)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("{:.2}", syncopate_tokio_cpu_pct)).set_alignment(CellAlignment::Right),
+        Cell::new("%"),
+    ]);
+
+    // Memory Usage
+    table.add_row(vec![
+        Cell::new("Memory Usage"),
+        Cell::new(raw_std.memory_kb.to_string()).set_alignment(CellAlignment::Right),
+        Cell::new(raw_tokio.memory_kb.to_string()).set_alignment(CellAlignment::Right),
+        Cell::new(syncopate_std.memory_kb.to_string()).set_alignment(CellAlignment::Right),
+        Cell::new(syncopate_tokio.memory_kb.to_string()).set_alignment(CellAlignment::Right),
+        Cell::new("KB"),
+    ]);
+
+    // Wakeup Count
+    table.add_row(vec![
+        Cell::new("Wakeup Count"),
+        Cell::new(raw_std.wakeup_count.to_string()).set_alignment(CellAlignment::Right),
+        Cell::new(raw_tokio.wakeup_count.to_string()).set_alignment(CellAlignment::Right),
+        Cell::new(syncopate_std.wakeup_count.to_string()).set_alignment(CellAlignment::Right),
+        Cell::new(syncopate_tokio.wakeup_count.to_string()).set_alignment(CellAlignment::Right),
+        Cell::new(""),
+    ]);
+
+    println!("\n{}", table);
+
+    // Print summary
+    let mut summary_table = Table::new();
+    summary_table
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec!["Comparison Summary"])
+        .add_row(vec![
+            "Raw std vs Raw tokio: Measures tokio::time::sleep overhead",
+        ])
+        .add_row(vec![
+            "Raw vs Syncopate: Measures syncopate scheduler overhead",
+        ])
+        .add_row(vec![
+            "Syn+Std vs Syn+Tokio: Measures impact of sleep mechanism on syncopate",
+        ]);
+
+    println!("\n{}", summary_table);
 }
 
 fn _print_comparison(native: &BenchmarkResults, syncopate: &BenchmarkResults) {
     let mut table = Table::new();
     table
         .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(vec!["Comparison: Native vs Syncopate", "Native", "Syncopate", "Diff"]);
+        .set_header(vec![
+            "Comparison: Native vs Syncopate",
+            "Native",
+            "Syncopate",
+            "Diff",
+        ]);
 
     table.add_row(vec![
         "Total Executions",
         &native.total_executions.to_string(),
         &syncopate.total_executions.to_string(),
-        &format!("{:>+.1}%", (syncopate.total_executions as f64 / native.total_executions as f64 - 1.0) * 100.0),
+        &format!(
+            "{:>+.1}%",
+            (syncopate.total_executions as f64 / native.total_executions as f64 - 1.0) * 100.0
+        ),
     ]);
 
     table.add_row(vec![
         "Avg Drift",
         &format!("{:.1}μs", native.avg_drift),
         &format!("{:.1}μs", syncopate.avg_drift),
-        &format!("{:>+.1}%", if native.avg_drift != 0.0 {
-            (syncopate.avg_drift / native.avg_drift - 1.0) * 100.0
-        } else {
-            0.0
-        }),
+        &format!(
+            "{:>+.1}%",
+            if native.avg_drift != 0.0 {
+                (syncopate.avg_drift / native.avg_drift - 1.0) * 100.0
+            } else {
+                0.0
+            }
+        ),
     ]);
 
     table.add_row(vec![
         "Max Drift",
         &format!("{:.1}μs", native.max_drift),
         &format!("{:.1}μs", syncopate.max_drift),
-        &format!("{:>+.1}%", if native.max_drift != 0.0 {
-            (syncopate.max_drift / native.max_drift - 1.0) * 100.0
-        } else {
-            0.0
-        }),
+        &format!(
+            "{:>+.1}%",
+            if native.max_drift != 0.0 {
+                (syncopate.max_drift / native.max_drift - 1.0) * 100.0
+            } else {
+                0.0
+            }
+        ),
     ]);
 
     table.add_row(vec![
         "Missed",
         &native.missed_count.to_string(),
         &syncopate.missed_count.to_string(),
-        &format!("{:>+}", syncopate.missed_count as i64 - native.missed_count as i64),
+        &format!(
+            "{:>+}",
+            syncopate.missed_count as i64 - native.missed_count as i64
+        ),
     ]);
 
     println!("\n{}", table);

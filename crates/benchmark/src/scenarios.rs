@@ -14,7 +14,12 @@ pub struct TimerConfig {
 }
 
 impl TimerConfig {
-    pub fn new(period: Duration, count: usize, window_before: Duration, window_after: Duration) -> Self {
+    pub fn new(
+        period: Duration,
+        count: usize,
+        window_before: Duration,
+        window_after: Duration,
+    ) -> Self {
         Self {
             period,
             count,
@@ -58,14 +63,12 @@ impl BenchmarkScenario {
             name: "light",
             description: "Single device coordination (5 timers @ 1s)",
             duration: Duration::from_secs(30),
-            timers: vec![
-                TimerConfig::new(
-                    Duration::from_secs(1),
-                    5,
-                    Duration::from_millis(50),
-                    Duration::from_millis(50),
-                ),
-            ],
+            timers: vec![TimerConfig::new(
+                Duration::from_secs(1),
+                5,
+                Duration::from_millis(50),
+                Duration::from_millis(50),
+            )],
         }
     }
 
@@ -133,14 +136,12 @@ impl BenchmarkScenario {
             name: "extreme",
             description: "Ramp-up stress test (10 @ 1ms, designed for gradual increase)",
             duration: Duration::from_secs(180),
-            timers: vec![
-                TimerConfig::new(
-                    Duration::from_millis(1),
-                    10,
-                    Duration::from_micros(500),
-                    Duration::from_micros(500),
-                ),
-            ],
+            timers: vec![TimerConfig::new(
+                Duration::from_millis(1),
+                10,
+                Duration::from_micros(500),
+                Duration::from_micros(500),
+            )],
         }
     }
 
@@ -209,14 +210,12 @@ impl BenchmarkScenario {
             name: "burst",
             description: "Short bursts (100 timers @ 50ms)",
             duration: Duration::from_secs(45),
-            timers: vec![
-                TimerConfig::new(
-                    Duration::from_millis(50),
-                    100,
-                    Duration::from_millis(5),
-                    Duration::from_millis(5),
-                ),
-            ],
+            timers: vec![TimerConfig::new(
+                Duration::from_millis(50),
+                100,
+                Duration::from_millis(5),
+                Duration::from_millis(5),
+            )],
         }
     }
 
@@ -278,55 +277,55 @@ impl AcceptanceCriteria {
     pub fn for_scenario(name: &str) -> Self {
         match name {
             "light" => Self {
-                max_avg_drift_us: 100.0,      // Very strict - low load should be precise
-                max_p99_drift_us: 500.0,       // Tight p99 bound
-                min_on_time_percent: 99.0,     // Nearly all should be on time
-                max_missed_percent: 0.1,       // Almost no misses allowed
-                max_cpu_percent: 5.0,          // Very low CPU usage expected
+                max_avg_drift_us: 100.0,   // Very strict - low load should be precise
+                max_p99_drift_us: 500.0,   // Tight p99 bound
+                min_on_time_percent: 99.0, // Nearly all should be on time
+                max_missed_percent: 0.1,   // Almost no misses allowed
+                max_cpu_percent: 5.0,      // Very low CPU usage expected
             },
             "medium" => Self {
-                max_avg_drift_us: 200.0,       // Moderate precision
-                max_p99_drift_us: 1000.0,      // 1ms p99
-                min_on_time_percent: 95.0,     // Most should be on time
-                max_missed_percent: 1.0,       // Few misses allowed
-                max_cpu_percent: 15.0,         // Moderate CPU usage
+                max_avg_drift_us: 200.0,   // Moderate precision
+                max_p99_drift_us: 1000.0,  // 1ms p99
+                min_on_time_percent: 95.0, // Most should be on time
+                max_missed_percent: 1.0,   // Few misses allowed
+                max_cpu_percent: 15.0,     // Moderate CPU usage
             },
             "heavy" => Self {
-                max_avg_drift_us: 500.0,       // Higher drift acceptable
-                max_p99_drift_us: 2000.0,      // 2ms p99
-                min_on_time_percent: 90.0,     // Good portion on time
-                max_missed_percent: 3.0,       // Some misses acceptable
-                max_cpu_percent: 35.0,         // Higher CPU usage
+                max_avg_drift_us: 500.0,   // Higher drift acceptable
+                max_p99_drift_us: 2000.0,  // 2ms p99
+                min_on_time_percent: 90.0, // Good portion on time
+                max_missed_percent: 3.0,   // Some misses acceptable
+                max_cpu_percent: 35.0,     // Higher CPU usage
             },
             "extreme" => Self {
-                max_avg_drift_us: 1000.0,      // Very permissive
-                max_p99_drift_us: 5000.0,      // 5ms p99
-                min_on_time_percent: 80.0,     // Lower expectations
-                max_missed_percent: 10.0,      // Many misses acceptable
-                max_cpu_percent: 60.0,         // High CPU usage expected
+                max_avg_drift_us: 1000.0,  // Very permissive
+                max_p99_drift_us: 5000.0,  // 5ms p99
+                min_on_time_percent: 80.0, // Lower expectations
+                max_missed_percent: 10.0,  // Many misses acceptable
+                max_cpu_percent: 60.0,     // High CPU usage expected
             },
             "mixed-frequency" => Self {
-                max_avg_drift_us: 300.0,       // Moderate average
-                max_p99_drift_us: 1500.0,      // 1.5ms p99
-                min_on_time_percent: 92.0,     // Good performance
-                max_missed_percent: 2.0,       // Low miss rate
-                max_cpu_percent: 25.0,         // Reasonable CPU
+                max_avg_drift_us: 300.0,   // Moderate average
+                max_p99_drift_us: 1500.0,  // 1.5ms p99
+                min_on_time_percent: 92.0, // Good performance
+                max_missed_percent: 2.0,   // Low miss rate
+                max_cpu_percent: 25.0,     // Reasonable CPU
             },
             "burst" => Self {
-                max_avg_drift_us: 400.0,       // Bursts can cause drift
-                max_p99_drift_us: 2000.0,      // 2ms p99
-                min_on_time_percent: 88.0,     // Some degradation expected
-                max_missed_percent: 5.0,       // Bursts may cause misses
-                max_cpu_percent: 40.0,         // High CPU during bursts
+                max_avg_drift_us: 400.0,   // Bursts can cause drift
+                max_p99_drift_us: 2000.0,  // 2ms p99
+                min_on_time_percent: 88.0, // Some degradation expected
+                max_missed_percent: 5.0,   // Bursts may cause misses
+                max_cpu_percent: 40.0,     // High CPU during bursts
             },
             "coalescing-test" => Self {
-                max_avg_drift_us: 250.0,       // Should be efficient
-                max_p99_drift_us: 1200.0,      // Good p99
-                min_on_time_percent: 93.0,     // High success rate
-                max_missed_percent: 1.5,       // Low miss rate
-                max_cpu_percent: 20.0,         // Coalescing should reduce CPU
+                max_avg_drift_us: 250.0,   // Should be efficient
+                max_p99_drift_us: 1200.0,  // Good p99
+                min_on_time_percent: 93.0, // High success rate
+                max_missed_percent: 1.5,   // Low miss rate
+                max_cpu_percent: 20.0,     // Coalescing should reduce CPU
             },
-            _ => Self::default(),              // Fallback to default
+            _ => Self::default(), // Fallback to default
         }
     }
 

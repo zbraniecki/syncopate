@@ -1,5 +1,5 @@
+use comfy_table::{Cell, CellAlignment, ContentArrangement, Table};
 use std::time::Duration;
-use comfy_table::{Table, ContentArrangement, Cell, CellAlignment};
 
 #[derive(Debug, Clone)]
 pub struct BenchmarkResults {
@@ -221,8 +221,10 @@ impl BenchmarkResults {
         // Build outliers from unsorted data (correct index mapping)
         let warm_up_threshold = (deltas.len() as f64 * 0.05).ceil() as usize;
         let mut drifted_tasks: Vec<(usize, i64, String, String)> = Vec::new();
-        for (idx, (&raw_delta, &corrected)) in
-            deltas.iter().zip(corrected_drifts_unsorted.iter()).enumerate()
+        for (idx, (&raw_delta, &corrected)) in deltas
+            .iter()
+            .zip(corrected_drifts_unsorted.iter())
+            .enumerate()
         {
             let category = if raw_delta < -window_before_micros {
                 "Early"
@@ -242,7 +244,12 @@ impl BenchmarkResults {
                 ""
             };
 
-            drifted_tasks.push((idx + 1, corrected as i64, category.to_string(), notes.to_string()));
+            drifted_tasks.push((
+                idx + 1,
+                corrected as i64,
+                category.to_string(),
+                notes.to_string(),
+            ));
         }
 
         // Sort by absolute corrected drift and take top 10 with >10μs deviation
@@ -343,59 +350,76 @@ impl BenchmarkResults {
 
         let pct = |count: usize| -> String {
             if self.total_executions > 0 {
-                format!("{} ({:.1}%)", count, count as f64 / self.total_executions as f64 * 100.0)
+                format!(
+                    "{} ({:.1}%)",
+                    count,
+                    count as f64 / self.total_executions as f64 * 100.0
+                )
             } else {
                 format!("{} (0.0%)", count)
             }
         };
 
         // Main results
-        println!("\n{}", kv_table(
-            &format!("Benchmark Results: {}", name),
-            vec![
-                ("Period", format!("{:?}", period)),
-            ],
-        ));
+        println!(
+            "\n{}",
+            kv_table(
+                &format!("Benchmark Results: {}", name),
+                vec![("Period", format!("{:?}", period)),],
+            )
+        );
 
         // Execution Summary
-        println!("\n{}", kv_table(
-            "Execution Summary",
-            vec![
-                ("Total Executions", format!("{}", self.total_executions)),
-                ("Early", pct(self.early_count)),
-                ("On-Time", pct(self.on_time_count)),
-                ("Late", pct(self.late_count)),
-                ("Missed", format!("{}", self.missed_count)),
-            ],
-        ));
+        println!(
+            "\n{}",
+            kv_table(
+                "Execution Summary",
+                vec![
+                    ("Total Executions", format!("{}", self.total_executions)),
+                    ("Early", pct(self.early_count)),
+                    ("On-Time", pct(self.on_time_count)),
+                    ("Late", pct(self.late_count)),
+                    ("Missed", format!("{}", self.missed_count)),
+                ],
+            )
+        );
 
         // Timing Jitter (baseline-corrected)
-        println!("\n{}", kv_table(
-            "Timing Jitter (baseline-corrected)",
-            vec![
-                ("Min", format!("{:+.1} μs", self.min_drift)),
-                ("Max", format!("{:+.1} μs", self.max_drift)),
-                ("Average", format!("{:+.1} μs", self.avg_drift)),
-                ("Std Dev", format!("{:.1} μs", self.stddev_drift)),
-                ("P50", format!("{:+.1} μs", self.p50_drift)),
-                ("P95", format!("{:+.1} μs", self.p95_drift)),
-                ("P99", format!("{:+.1} μs", self.p99_drift)),
-            ],
-        ));
+        println!(
+            "\n{}",
+            kv_table(
+                "Timing Jitter (baseline-corrected)",
+                vec![
+                    ("Min", format!("{:+.1} μs", self.min_drift)),
+                    ("Max", format!("{:+.1} μs", self.max_drift)),
+                    ("Average", format!("{:+.1} μs", self.avg_drift)),
+                    ("Std Dev", format!("{:.1} μs", self.stddev_drift)),
+                    ("P50", format!("{:+.1} μs", self.p50_drift)),
+                    ("P95", format!("{:+.1} μs", self.p95_drift)),
+                    ("P99", format!("{:+.1} μs", self.p99_drift)),
+                ],
+            )
+        );
 
         // Resource Usage
-        println!("\n{}", kv_table(
-            "Resource Usage",
-            vec![
-                ("CPU Time", format!("{:.3?}", self.cpu_time)),
-                ("Memory", if self.memory_kb >= 1024 {
-                    format!("{:.2} MB", self.memory_kb as f64 / 1024.0)
-                } else {
-                    format!("{} KB", self.memory_kb)
-                }),
-                ("Context Switches", format!("{}", self.context_switches)),
-            ],
-        ));
+        println!(
+            "\n{}",
+            kv_table(
+                "Resource Usage",
+                vec![
+                    ("CPU Time", format!("{:.3?}", self.cpu_time)),
+                    (
+                        "Memory",
+                        if self.memory_kb >= 1024 {
+                            format!("{:.2} MB", self.memory_kb as f64 / 1024.0)
+                        } else {
+                            format!("{} KB", self.memory_kb)
+                        }
+                    ),
+                    ("Context Switches", format!("{}", self.context_switches)),
+                ],
+            )
+        );
 
         // Scheduler Metrics
         let coalescing = if self.coalescing_ratio >= 1.0 {
@@ -403,16 +427,28 @@ impl BenchmarkResults {
         } else {
             format!("{:.2}x (no coalescing)", self.coalescing_ratio)
         };
-        println!("\n{}", kv_table(
-            "Scheduler Metrics",
-            vec![
-                ("Scheduler Overhead", format!("{:.2}%", self.scheduler_overhead_percent)),
-                ("Wakeup Count", format!("{}", self.wakeup_count)),
-                ("Coalescing Ratio", coalescing),
-                ("Avg Tasks/Wakeup", format!("{:.2}", self.avg_tasks_per_wakeup)),
-                ("Avg Task Exec Time", format!("{:.2} μs", self.avg_task_execution_us)),
-            ],
-        ));
+        println!(
+            "\n{}",
+            kv_table(
+                "Scheduler Metrics",
+                vec![
+                    (
+                        "Scheduler Overhead",
+                        format!("{:.2}%", self.scheduler_overhead_percent)
+                    ),
+                    ("Wakeup Count", format!("{}", self.wakeup_count)),
+                    ("Coalescing Ratio", coalescing),
+                    (
+                        "Avg Tasks/Wakeup",
+                        format!("{:.2}", self.avg_tasks_per_wakeup)
+                    ),
+                    (
+                        "Avg Task Exec Time",
+                        format!("{:.2} μs", self.avg_task_execution_us)
+                    ),
+                ],
+            )
+        );
 
         // Per-Execution Details
         if !self.first_executions.is_empty() {
@@ -439,7 +475,8 @@ impl BenchmarkResults {
                 for (exec_num, delta, category) in &self.last_executions {
                     details.add_row(vec![
                         Cell::new(exec_num).set_alignment(CellAlignment::Right),
-                        Cell::new(format!("{:+.1}", *delta as f64)).set_alignment(CellAlignment::Right),
+                        Cell::new(format!("{:+.1}", *delta as f64))
+                            .set_alignment(CellAlignment::Right),
                         Cell::new(category).set_alignment(CellAlignment::Right),
                         Cell::new(&window_str),
                     ]);
@@ -453,23 +490,41 @@ impl BenchmarkResults {
         let cumulative_drift =
             (self.actual_duration_secs - self.expected_duration_secs) * 1_000_000.0;
         let baseline_note = if self.baseline_delta < 0 {
-            format!("tasks fire ~{}μs early within window", self.baseline_delta.abs())
+            format!(
+                "tasks fire ~{}μs early within window",
+                self.baseline_delta.abs()
+            )
         } else if self.baseline_delta > 0 {
             format!("tasks fire ~{}μs late within window", self.baseline_delta)
         } else {
             "tasks fire on ideal time".to_string()
         };
-        println!("\n{}", kv_table(
-            "Drift Analysis (deviation from ideal timing)",
-            vec![
-                ("Expected Executions", format!("{}", self.expected_executions)),
-                ("Actual Executions", format!("{}", self.total_executions)),
-                ("Expected Duration", format!("{:.6}s", self.expected_duration_secs)),
-                ("Actual Duration", format!("{:.6}s", self.actual_duration_secs)),
-                ("Cumulative Drift", format!("{:+.1} μs", cumulative_drift)),
-                ("Baseline Offset", format!("{:+} μs ({})", self.baseline_delta, baseline_note)),
-            ],
-        ));
+        println!(
+            "\n{}",
+            kv_table(
+                "Drift Analysis (deviation from ideal timing)",
+                vec![
+                    (
+                        "Expected Executions",
+                        format!("{}", self.expected_executions)
+                    ),
+                    ("Actual Executions", format!("{}", self.total_executions)),
+                    (
+                        "Expected Duration",
+                        format!("{:.6}s", self.expected_duration_secs)
+                    ),
+                    (
+                        "Actual Duration",
+                        format!("{:.6}s", self.actual_duration_secs)
+                    ),
+                    ("Cumulative Drift", format!("{:+.1} μs", cumulative_drift)),
+                    (
+                        "Baseline Offset",
+                        format!("{:+} μs ({})", self.baseline_delta, baseline_note)
+                    ),
+                ],
+            )
+        );
 
         // Drifted Tasks (outliers)
         if !self.top_outliers.is_empty() {
@@ -489,7 +544,8 @@ impl BenchmarkResults {
             for (exec_num, drift, category, notes) in self.top_outliers.iter().take(show_count) {
                 outliers.add_row(vec![
                     Cell::new(exec_num).set_alignment(CellAlignment::Right),
-                    Cell::new(format!("{:+.1}μs", *drift as f64)).set_alignment(CellAlignment::Right),
+                    Cell::new(format!("{:+.1}μs", *drift as f64))
+                        .set_alignment(CellAlignment::Right),
                     Cell::new(category).set_alignment(CellAlignment::Right),
                     Cell::new(notes),
                 ]);

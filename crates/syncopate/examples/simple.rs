@@ -51,6 +51,7 @@ async fn main() {
                     period: Duration::from_millis(1500),
                     window_before: Duration::from_millis(100),
                     window_after: Duration::from_millis(100),
+                    anchored: false,
                 },
                 priority: 0,
                 name: Some("hello_world".into()),

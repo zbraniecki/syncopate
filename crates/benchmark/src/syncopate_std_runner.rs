@@ -18,7 +18,7 @@ struct BenchmarkContext {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn run_benchmark(
+pub fn run_benchmark(
     duration: Duration,
     period: Duration,
     min_period: Duration,
@@ -83,79 +83,61 @@ pub async fn run_benchmark(
     let benchmark_start = Instant::now();
     let start_cpu = get_thread_cpu_time();
     let report_interval = Duration::from_secs(1);
+    let mut last_report = benchmark_start;
 
-    println!("Starting benchmark...\n");
+    println!("Starting syncopate+std::thread::sleep benchmark...\n");
 
-    // Spawn the scheduler loop (scheduler already has tasks)
-    let ctx_clone = ctx.clone();
-    let benchmark_start_clone = benchmark_start;
-    let duration_clone = duration;
-    let period_clone = period;
-    let num_timers_clone = num_timers;
+    loop {
+        // Track poll() call and duration
+        let poll_start = Instant::now();
+        ctx.wakeup_count.fetch_add(1, Ordering::Relaxed);
 
-    let scheduler_handle = tokio::spawn(async move {
-        let mut last_report = benchmark_start_clone;
+        let idle_duration = scheduler.poll();
 
-        loop {
-            // Track poll() call and duration
-            let poll_start = Instant::now();
-            ctx_clone.wakeup_count.fetch_add(1, Ordering::Relaxed);
+        let poll_duration = poll_start.elapsed();
+        ctx.scheduler_overhead_ns
+            .fetch_add(poll_duration.as_nanos() as u64, Ordering::Relaxed);
 
-            let idle_duration = scheduler.poll();
+        let now = Instant::now();
 
-            let poll_duration = poll_start.elapsed();
-            ctx_clone
-                .scheduler_overhead_ns
-                .fetch_add(poll_duration.as_nanos() as u64, Ordering::Relaxed);
-
-            let now = Instant::now();
-
-            // Periodic progress report
-            if now.duration_since(last_report) >= report_interval {
-                let elapsed = now.duration_since(benchmark_start_clone);
-                let execs = ctx_clone.timestamps.lock().unwrap().len();
-                let missed = *ctx_clone.missed_count.lock().unwrap();
-                let expected_sofar =
-                    (elapsed.as_nanos() / period_clone.as_nanos()) as usize * num_timers_clone;
-                let idle_pct = if expected_sofar > 0 {
-                    (100.0 - ((execs as f64 / expected_sofar as f64) * 100.0)).max(0.0)
-                } else {
-                    0.0
-                };
-
-                println!(
-                    "[{:>5.1}s] Executions: {:>6}  Missed: {:>4}  Idle: {:>6.1}%",
-                    elapsed.as_secs_f64(),
-                    execs,
-                    missed,
-                    idle_pct
-                );
-                last_report += report_interval;
-            }
-
-            // Check if benchmark is complete
-            if benchmark_start_clone.elapsed() >= duration_clone {
-                break;
-            }
-
-            // Sleep for idle duration (but don't overshoot benchmark end time)
-            if idle_duration > Duration::ZERO {
-                // Cap sleep at remaining benchmark time to ensure prompt exit
-                let time_remaining = duration_clone.saturating_sub(benchmark_start_clone.elapsed());
-                let sleep_duration = idle_duration.min(time_remaining);
-
-                if sleep_duration > Duration::ZERO {
-                    tokio::time::sleep(sleep_duration).await;
-                }
+        // Periodic progress report
+        if now.duration_since(last_report) >= report_interval {
+            let elapsed = now.duration_since(benchmark_start);
+            let execs = ctx.timestamps.lock().unwrap().len();
+            let missed = *ctx.missed_count.lock().unwrap();
+            let expected_sofar = (elapsed.as_nanos() / period.as_nanos()) as usize * num_timers;
+            let idle_pct = if expected_sofar > 0 {
+                (100.0 - ((execs as f64 / expected_sofar as f64) * 100.0)).max(0.0)
             } else {
-                // Small yield to prevent busy waiting when no idle time
-                tokio::task::yield_now().await;
+                0.0
+            };
+
+            println!(
+                "[{:>5.1}s] Executions: {:>6}  Missed: {:>4}  Idle: {:>6.1}%",
+                elapsed.as_secs_f64(),
+                execs,
+                missed,
+                idle_pct
+            );
+            last_report += report_interval;
+        }
+
+        // Check if benchmark is complete
+        if benchmark_start.elapsed() >= duration {
+            break;
+        }
+
+        // Sleep for idle duration using std::thread::sleep (but don't overshoot benchmark end time)
+        if idle_duration > Duration::ZERO {
+            // Cap sleep at remaining benchmark time to ensure prompt exit
+            let time_remaining = duration.saturating_sub(benchmark_start.elapsed());
+            let sleep_duration = idle_duration.min(time_remaining);
+
+            if sleep_duration > Duration::ZERO {
+                std::thread::sleep(sleep_duration);
             }
         }
-    });
-
-    // Wait for scheduler to complete
-    scheduler_handle.await.unwrap();
+    }
 
     let final_execs = ctx.timestamps.lock().unwrap().len();
     let final_missed = *ctx.missed_count.lock().unwrap();
@@ -169,6 +151,7 @@ pub async fn run_benchmark(
     );
 
     let end_cpu = get_thread_cpu_time();
+    let cpu_time = end_cpu.saturating_sub(start_cpu);
     let memory_kb = get_memory_usage();
     let context_switches = get_context_switches();
 
@@ -178,10 +161,12 @@ pub async fn run_benchmark(
     let task_execution_duration =
         Duration::from_nanos(ctx.task_execution_ns.load(Ordering::Relaxed));
 
+    let timestamps = ctx.timestamps.lock().unwrap().clone();
+
     BenchmarkResults::from_timestamps(
-        ctx.timestamps.lock().unwrap().clone(),
+        timestamps,
         final_missed,
-        end_cpu - start_cpu,
+        cpu_time,
         memory_kb,
         context_switches,
         period,

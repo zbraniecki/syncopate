@@ -190,8 +190,8 @@ pub fn export_csv(results: &BenchmarkResults, path: &str) -> io::Result<()> {
     for (exec_num, drift, category) in &results.first_executions {
         let record = CsvRecord {
             execution_num: *exec_num,
-            timer_id: 0, // Timer ID not available in aggregated results
-            ideal_time_us: 0, // Would need raw timestamps
+            timer_id: 0,       // Timer ID not available in aggregated results
+            ideal_time_us: 0,  // Would need raw timestamps
             actual_time_us: 0, // Would need raw timestamps
             drift_us: *drift,
             category: category.clone(),

@@ -1,10 +1,10 @@
-use std::time::Duration;
 use crate::metrics::BenchmarkResults;
+use std::time::Duration;
 
-#[cfg(target_os = "macos")]
-mod macos;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 
 /// Run benchmark using native platform timers
 pub async fn run_benchmark(

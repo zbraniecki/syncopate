@@ -1,7 +1,7 @@
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 use crate::metrics::BenchmarkResults;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 // macOS platform benchmark using thread-based timers with sleep
 // This approximates what GCD would do internally - using kqueue/kevent for timer events
@@ -53,10 +53,7 @@ pub async fn run_benchmark(
                 // Track scheduler overhead (wakeup latency beyond requested period)
                 let actual_sleep = wakeup_time.duration_since(scheduler_start);
                 let latency = actual_sleep.saturating_sub(period);
-                scheduler_overhead_ns_clone.fetch_add(
-                    latency.as_nanos() as u64,
-                    Ordering::Relaxed
-                );
+                scheduler_overhead_ns_clone.fetch_add(latency.as_nanos() as u64, Ordering::Relaxed);
                 wakeup_count_clone.fetch_add(1, Ordering::Relaxed);
 
                 // Task execution starts
@@ -83,13 +80,16 @@ pub async fn run_benchmark(
 
                 // Record timestamp with ideal time
                 let ideal_time = start_time + period * count;
-                timestamps_clone.lock().unwrap().push((timer_id, now, ideal_time));
+                timestamps_clone
+                    .lock()
+                    .unwrap()
+                    .push((timer_id, now, ideal_time));
 
                 // Track task execution time
                 let task_end = Instant::now();
                 task_execution_ns_clone.fetch_add(
                     task_end.duration_since(task_start).as_nanos() as u64,
-                    Ordering::Relaxed
+                    Ordering::Relaxed,
                 );
 
                 // Periodic progress report (only from timer 0 to avoid spam)
@@ -98,7 +98,8 @@ pub async fn run_benchmark(
                     if now.duration_since(*last_report_locked) >= report_interval {
                         let execs = timestamps_clone.lock().unwrap().len();
                         let missed = *missed_count_clone.lock().unwrap();
-                        let expected_sofar = (elapsed.as_nanos() / period.as_nanos()) as usize * num_timers;
+                        let expected_sofar =
+                            (elapsed.as_nanos() / period.as_nanos()) as usize * num_timers;
                         let idle_pct = if expected_sofar > 0 {
                             (100.0 - ((execs as f64 / expected_sofar as f64) * 100.0)).max(0.0)
                         } else {
@@ -168,7 +169,7 @@ pub async fn run_benchmark(
 
 fn get_thread_cpu_time() -> Duration {
     use std::os::raw::{c_int, c_uint};
-    
+
     unsafe extern "C" {
         fn mach_thread_self() -> c_uint;
         fn thread_info(
@@ -178,12 +179,12 @@ fn get_thread_cpu_time() -> Duration {
             thread_info_count: *mut c_uint,
         ) -> c_int;
     }
-    
+
     unsafe {
         let thread = mach_thread_self();
         let mut info: [c_int; 10] = [0; 10];
         let mut count: c_uint = 10;
-        
+
         // THREAD_BASIC_INFO = 3
         let kr = thread_info(thread, 3, info.as_mut_ptr(), &mut count);
         if kr == 0 {
@@ -191,7 +192,7 @@ fn get_thread_cpu_time() -> Duration {
             let user_micros = info[1] as u64;
             let sys_secs = info[2] as u64;
             let sys_micros = info[3] as u64;
-            
+
             Duration::from_secs(user_secs + sys_secs)
                 + Duration::from_micros(user_micros + sys_micros)
         } else {

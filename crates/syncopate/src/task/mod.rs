@@ -39,5 +39,11 @@ pub enum TaskType {
 
         /// Task may execute this much after its ideal time.
         window_after: Duration,
+
+        /// If true, next deadline is wall-clock aligned (`next_deadline += period`).
+        /// If false (interval mode), next deadline is relative to actual fire time
+        /// (`next_deadline = now + period`). Interval mode is preferred for animations
+        /// to avoid cascading misses from OS sleep overshoot.
+        anchored: bool,
     },
 }

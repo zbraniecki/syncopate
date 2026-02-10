@@ -1,12 +1,12 @@
-use nix::errno::Errno;
-use nix::sys::epoll::{epoll_create, epoll_ctl, epoll_wait, EpollEvent, EpollFlags, EpollOp};
-use nix::sys::timerfd::{ClockId, TimerFd, TimerFlags, TimerSetTimeFlags};
-use nix::sys::time::TimeSpec;
-use std::os::unix::io::{AsRawFd, RawFd};
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 use crate::metrics::BenchmarkResults;
+use nix::errno::Errno;
+use nix::sys::epoll::{EpollEvent, EpollFlags, EpollOp, epoll_create, epoll_ctl, epoll_wait};
+use nix::sys::time::TimeSpec;
+use nix::sys::timerfd::{ClockId, TimerFd, TimerFlags, TimerSetTimeFlags};
+use std::os::unix::io::{AsRawFd, RawFd};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub async fn run_benchmark(
     duration: Duration,
@@ -22,26 +22,28 @@ pub async fn run_benchmark(
 
     // Create epoll instance
     let epoll_fd = epoll_create().expect("Failed to create epoll");
-    
+
     // Create timerfds
     let mut timers: Vec<(TimerFd, usize)> = Vec::new();
     let start_time = Instant::now();
-    
+
     for i in 0..num_timers {
         let timer = TimerFd::new(
             ClockId::CLOCK_MONOTONIC,
             TimerFlags::TFD_NONBLOCK | TimerFlags::TFD_CLOEXEC,
-        ).expect("Failed to create timerfd");
-        
+        )
+        .expect("Failed to create timerfd");
+
         // Set interval
         let itimerspec = nix::sys::timerfd::Itimerspec {
             it_interval: duration_to_timespec(period),
             it_value: duration_to_timespec(period), // First expiration
         };
-        
-        timer.set(&itimerspec, TimerSetTimeFlags::empty())
+
+        timer
+            .set(&itimerspec, TimerSetTimeFlags::empty())
             .expect("Failed to set timer");
-        
+
         // Add to epoll
         let mut event = EpollEvent::new(EpollFlags::EPOLLIN, i as u64);
         epoll_ctl(
@@ -49,15 +51,16 @@ pub async fn run_benchmark(
             EpollOp::EpollCtlAdd,
             timer.as_raw_fd(),
             Some(&mut event),
-        ).expect("Failed to add timer to epoll");
-        
+        )
+        .expect("Failed to add timer to epoll");
+
         timers.push((timer, i));
     }
-    
+
     let start_cpu = get_thread_cpu_time();
     let end_time = start_time + duration;
     let mut events: [EpollEvent; 1024] = [EpollEvent::empty(); 1024];
-    
+
     while Instant::now() < end_time {
         let timeout_ms = 10i32; // 10ms timeout to check duration
 
@@ -68,10 +71,7 @@ pub async fn run_benchmark(
         match epoll_wait(epoll_fd, &mut events, timeout_ms) {
             Ok(n) => {
                 let poll_duration = poll_start.elapsed();
-                scheduler_overhead_ns.fetch_add(
-                    poll_duration.as_nanos() as u64,
-                    Ordering::Relaxed
-                );
+                scheduler_overhead_ns.fetch_add(poll_duration.as_nanos() as u64, Ordering::Relaxed);
 
                 let now = Instant::now();
                 for i in 0..n {
@@ -87,10 +87,12 @@ pub async fn run_benchmark(
                             let task_start = Instant::now();
                             let elapsed = now.duration_since(start_time);
                             let expected_count = (elapsed.as_nanos() / period.as_nanos()) as usize;
-                            let ideal_time = start_time + period * (expected_count - (expirations - j - 1) as usize) as u32;
+                            let ideal_time = start_time
+                                + period * (expected_count - (expirations - j - 1) as usize) as u32;
                             timestamps.lock().unwrap().push((timer_id, now, ideal_time));
                             let task_duration = task_start.elapsed();
-                            task_execution_ns.fetch_add(task_duration.as_nanos() as u64, Ordering::Relaxed);
+                            task_execution_ns
+                                .fetch_add(task_duration.as_nanos() as u64, Ordering::Relaxed);
                         }
                     }
                 }
@@ -101,15 +103,15 @@ pub async fn run_benchmark(
             }
         }
     }
-    
+
     let end_cpu = get_thread_cpu_time();
-    
+
     // Cleanup
     for (timer, _) in &timers {
         let _ = epoll_ctl(epoll_fd, EpollOp::EpollCtlDel, timer.as_raw_fd(), None);
     }
     let _ = nix::unistd::close(epoll_fd);
-    
+
     let memory_kb = get_memory_usage();
     let context_switches = get_context_switches();
 
@@ -134,15 +136,12 @@ pub async fn run_benchmark(
 }
 
 fn duration_to_timespec(d: Duration) -> TimeSpec {
-    TimeSpec::new(
-        d.as_secs() as i64,
-        d.subsec_nanos() as i64,
-    )
+    TimeSpec::new(d.as_secs() as i64, d.subsec_nanos() as i64)
 }
 
 fn get_thread_cpu_time() -> Duration {
-    use nix::sys::resource::{getrusage, UsageWho};
-    
+    use nix::sys::resource::{UsageWho, getrusage};
+
     match getrusage(UsageWho::RUSAGE_THREAD) {
         Ok(usage) => {
             let user = usage.user_time();
@@ -156,7 +155,7 @@ fn get_thread_cpu_time() -> Duration {
 
 fn get_memory_usage() -> u64 {
     use std::fs::read_to_string;
-    
+
     if let Ok(status) = read_to_string("/proc/self/status") {
         for line in status.lines() {
             if line.starts_with("VmRSS:") {
@@ -174,7 +173,7 @@ fn get_memory_usage() -> u64 {
 }
 
 fn get_context_switches() -> u64 {
-    use nix::sys::resource::{getrusage, UsageWho};
+    use nix::sys::resource::{UsageWho, getrusage};
 
     match getrusage(UsageWho::RUSAGE_THREAD) {
         Ok(usage) => {

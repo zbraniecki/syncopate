@@ -40,6 +40,12 @@ impl<Ctx> ScheduledTask<Ctx> {
             TaskType::Periodic { period, .. } => *period,
         }
     }
+
+    fn is_anchored(&self) -> bool {
+        match &self.config.task_type {
+            TaskType::Periodic { anchored, .. } => *anchored,
+        }
+    }
 }
 
 // Reverse ordering for min-heap behavior
@@ -66,7 +72,6 @@ impl<Ctx> Ord for ScheduledTask<Ctx> {
             .then_with(|| other.config.priority.cmp(&self.config.priority))
     }
 }
-
 
 /// Single-owner scheduler loop. Processes commands and computes plans.
 pub struct SchedulerLoop<Ctx = ()> {
@@ -138,7 +143,11 @@ impl<Ctx> SchedulerLoop<Ctx> {
 
                 // Reset miss count and reschedule
                 task.miss_count = 0;
-                task.next_deadline += task.period();
+                if task.is_anchored() {
+                    task.next_deadline += task.period();
+                } else {
+                    task.next_deadline = now + task.period();
+                }
                 to_reschedule.push(task);
             } else {
                 // Task missed its window
@@ -156,7 +165,11 @@ impl<Ctx> SchedulerLoop<Ctx> {
                 }
 
                 // Reschedule to next period
-                task.next_deadline += task.period();
+                if task.is_anchored() {
+                    task.next_deadline += task.period();
+                } else {
+                    task.next_deadline = now + task.period();
+                }
                 to_reschedule.push(task);
             }
         }

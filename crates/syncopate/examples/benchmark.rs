@@ -341,7 +341,10 @@ async fn main() {
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║          Syncopate Scheduler Benchmark                       ║");
     println!("╠══════════════════════════════════════════════════════════════╣");
-    println!("║ Running {:?} benchmark                                        ║", benchmark_duration);
+    println!(
+        "║ Running {:?} benchmark                                        ║",
+        benchmark_duration
+    );
     println!(
         "║ Scheduler: min={:?}, max={:?}                                 ║",
         min_period, max_period
@@ -403,6 +406,7 @@ async fn main() {
                         period: task_period_clone,
                         window_before: window_before_clone,
                         window_after: window_after_clone,
+                        anchored: false,
                     },
                     priority: 0,
                     name: Some("benchmark_1hz".into()),
@@ -412,14 +416,9 @@ async fn main() {
                 .with_executor(|exec, ctx| {
                     // Record execution in the context
                     let delta_micros = if exec.actual_time >= exec.ideal_time {
-                        exec.actual_time
-                            .duration_since(exec.ideal_time)
-                            .as_micros() as i64
+                        exec.actual_time.duration_since(exec.ideal_time).as_micros() as i64
                     } else {
-                        -(exec
-                            .ideal_time
-                            .duration_since(exec.actual_time)
-                            .as_micros() as i64)
+                        -(exec.ideal_time.duration_since(exec.actual_time).as_micros() as i64)
                     };
 
                     let task_exec = TaskExecution {
