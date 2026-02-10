@@ -1,28 +1,11 @@
 use clap::Parser;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use tokio::time::interval;
 
-struct AppCtx {
-    exact: AtomicU64,
-    late: AtomicU64,
-    early: AtomicU64,
-    last_tick: Option<Instant>,
-    interval_ms: f64,
-    tolerance: Duration,
-}
-
-impl AppCtx {
-    pub fn new(interval_ms: f64, tolerance: Duration) -> Self {
-        Self {
-            exact: AtomicU64::new(0),
-            late: AtomicU64::new(0),
-            early: AtomicU64::new(0),
-            last_tick: None,
-            interval_ms,
-            tolerance,
-        }
-    }
-}
+static EXACT_COUNT: AtomicU64 = AtomicU64::new(0);
+static EARLY_COUNT: AtomicU64 = AtomicU64::new(0);
+static LATE_COUNT: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Parser, Debug)]
 #[command(name = "tokio_interval_accuracy")]
@@ -45,8 +28,8 @@ fn fps_to_interval_ms(fps: u32) -> f64 {
     1000.0 / fps as f64
 }
 
-// #[tokio::main]
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = Args::parse();
 
     // Validate FPS
@@ -62,6 +45,7 @@ fn main() {
     };
 
     let interval_ms = fps_to_interval_ms(valid_fps);
+    let interval_duration = Duration::from_secs_f64(interval_ms / 1000.0);
     let tolerance = Duration::from_millis(args.tolerance);
     let test_duration = Duration::from_secs(args.duration);
 
@@ -72,25 +56,40 @@ fn main() {
     println!("Duration: {} seconds", args.duration);
     println!();
 
-    let mut ctx = AppCtx::new(interval_ms, tolerance);
-
     let start = Instant::now();
+    let mut ticker = interval(interval_duration);
+    let mut last_tick: Option<Instant> = None;
 
     loop {
-        tick(&mut ctx);
+        ticker.tick().await;
+        let now = Instant::now();
+
+        if let Some(last) = last_tick {
+            let actual_interval = now - last;
+            let expected_micros = (interval_ms * 1000.0) as i64;
+            let actual_micros = actual_interval.as_micros() as i64;
+            let diff_micros = actual_micros - expected_micros;
+            let tolerance_micros = tolerance.as_micros() as i64;
+
+            if diff_micros < -tolerance_micros {
+                EARLY_COUNT.fetch_add(1, Ordering::SeqCst);
+            } else if diff_micros > tolerance_micros {
+                LATE_COUNT.fetch_add(1, Ordering::SeqCst);
+            } else {
+                EXACT_COUNT.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        last_tick = Some(now);
 
         if start.elapsed() >= test_duration {
             break;
         }
-
-        let now = Instant::now();
-        std::thread::sleep(Duration::from_secs(1));
-        println!("elapsed: {:?}", now.elapsed());
     }
 
-    let exact = ctx.exact.load(Ordering::SeqCst);
-    let early = ctx.early.load(Ordering::SeqCst);
-    let late = ctx.late.load(Ordering::SeqCst);
+    let exact = EXACT_COUNT.load(Ordering::SeqCst);
+    let early = EARLY_COUNT.load(Ordering::SeqCst);
+    let late = LATE_COUNT.load(Ordering::SeqCst);
     let total = exact + early + late;
 
     let min_exact_ms = interval_ms - args.tolerance as f64;
@@ -125,26 +124,4 @@ fn main() {
         "Expected ~{:.0} frames in {} seconds at {} FPS",
         expected_ticks, args.duration, valid_fps
     );
-}
-
-fn tick(ctx: &mut AppCtx) {
-    let now = Instant::now();
-
-    if let Some(last) = ctx.last_tick {
-        let actual_interval = now - last;
-        let expected_micros = (ctx.interval_ms * 1000.0) as i64;
-        let actual_micros = actual_interval.as_micros() as i64;
-        let diff_micros = actual_micros - expected_micros;
-        let tolerance_micros = ctx.tolerance.as_micros() as i64;
-
-        if diff_micros < -tolerance_micros {
-            ctx.early.fetch_add(1, Ordering::SeqCst);
-        } else if diff_micros > tolerance_micros {
-            ctx.late.fetch_add(1, Ordering::SeqCst);
-        } else {
-            ctx.exact.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
-    ctx.last_tick = Some(now);
 }

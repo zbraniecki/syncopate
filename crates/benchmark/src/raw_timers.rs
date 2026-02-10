@@ -154,8 +154,40 @@ pub async fn run_tokio_sleep_benchmark(
 // Platform-specific CPU time measurement
 #[cfg(target_os = "macos")]
 fn get_thread_cpu_time() -> u64 {
-    use libc::{THREAD_BASIC_INFO, mach_thread_self, thread_basic_info, thread_info};
+    use mach2::mach_init::mach_thread_self;
+    use mach2::port::mach_port_t;
     use std::mem;
+
+    // Define thread_basic_info struct and constants
+    #[repr(C)]
+    struct time_value {
+        seconds: i32,
+        microseconds: i32,
+    }
+
+    #[repr(C)]
+    struct thread_basic_info {
+        user_time: time_value,
+        system_time: time_value,
+        cpu_usage: i32,
+        policy: i32,
+        run_state: i32,
+        flags: i32,
+        suspend_count: i32,
+        sleep_time: i32,
+    }
+
+    const THREAD_BASIC_INFO: i32 = 3;
+
+    // FFI to thread_info function
+    unsafe extern "C" {
+        fn thread_info(
+            target_act: mach_port_t,
+            flavor: i32,
+            thread_info_out: *mut i32,
+            thread_info_count: *mut u32,
+        ) -> i32;
+    }
 
     unsafe {
         let mut info: thread_basic_info = mem::zeroed();
@@ -163,7 +195,7 @@ fn get_thread_cpu_time() -> u64 {
 
         let result = thread_info(
             mach_thread_self(),
-            THREAD_BASIC_INFO as u32,
+            THREAD_BASIC_INFO,
             &mut info as *mut _ as *mut i32,
             &mut count,
         );
