@@ -9,6 +9,7 @@ pub type MissCallback<Ctx> = fn(&Ctx);
 
 pub struct Task<Ctx = ()> {
     pub task_type: TaskType,
+    pub anchored: bool,
     pub priority: u8,
     pub name: Option<String>,
     pub on_execute: Option<TaskCallback<Ctx>>,
