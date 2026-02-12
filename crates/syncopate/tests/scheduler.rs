@@ -164,6 +164,156 @@ fn test_scheduler_cycle() {
                 }, // t=6s (LCM)
             ],
         },
+        // 0.8s, 1.2s, and 1.4s tasks: full cycle until LCM (16.8s)
+        CycleTestCase {
+            task_periods_ns: &[800 * NANOS_PER_MS, 1200 * NANOS_PER_MS, 1400 * NANOS_PER_MS],
+            expected_cycle: &[
+                CycleStep {
+                    tick_duration_ns: 800 * NANOS_PER_MS,
+                    expected_task_indices: &[0],
+                }, // t=0.8s
+                CycleStep {
+                    tick_duration_ns: 400 * NANOS_PER_MS,
+                    expected_task_indices: &[1],
+                }, // t=1.2s
+                CycleStep {
+                    tick_duration_ns: 200 * NANOS_PER_MS,
+                    expected_task_indices: &[2],
+                }, // t=1.4s
+                CycleStep {
+                    tick_duration_ns: 200 * NANOS_PER_MS,
+                    expected_task_indices: &[0],
+                }, // t=1.6s
+                CycleStep {
+                    tick_duration_ns: 800 * NANOS_PER_MS,
+                    expected_task_indices: &[0, 1],
+                }, // t=2.4s
+                CycleStep {
+                    tick_duration_ns: 400 * NANOS_PER_MS,
+                    expected_task_indices: &[2],
+                }, // t=2.8s
+                CycleStep {
+                    tick_duration_ns: 400 * NANOS_PER_MS,
+                    expected_task_indices: &[0],
+                }, // t=3.2s
+                CycleStep {
+                    tick_duration_ns: 400 * NANOS_PER_MS,
+                    expected_task_indices: &[1],
+                }, // t=3.6s
+                CycleStep {
+                    tick_duration_ns: 400 * NANOS_PER_MS,
+                    expected_task_indices: &[0],
+                }, // t=4.0s
+                CycleStep {
+                    tick_duration_ns: 200 * NANOS_PER_MS,
+                    expected_task_indices: &[2],
+                }, // t=4.2s
+                CycleStep {
+                    tick_duration_ns: 600 * NANOS_PER_MS,
+                    expected_task_indices: &[0, 1],
+                }, // t=4.8s
+                CycleStep {
+                    tick_duration_ns: 800 * NANOS_PER_MS,
+                    expected_task_indices: &[0, 2],
+                }, // t=5.6s
+                CycleStep {
+                    tick_duration_ns: 400 * NANOS_PER_MS,
+                    expected_task_indices: &[1],
+                }, // t=6.0s
+                CycleStep {
+                    tick_duration_ns: 400 * NANOS_PER_MS,
+                    expected_task_indices: &[0],
+                }, // t=6.4s
+                CycleStep {
+                    tick_duration_ns: 600 * NANOS_PER_MS,
+                    expected_task_indices: &[2],
+                }, // t=7.0s
+                CycleStep {
+                    tick_duration_ns: 200 * NANOS_PER_MS,
+                    expected_task_indices: &[0, 1],
+                }, // t=7.2s
+                CycleStep {
+                    tick_duration_ns: 800 * NANOS_PER_MS,
+                    expected_task_indices: &[0],
+                }, // t=8.0s
+                CycleStep {
+                    tick_duration_ns: 400 * NANOS_PER_MS,
+                    expected_task_indices: &[1, 2],
+                }, // t=8.4s
+                CycleStep {
+                    tick_duration_ns: 400 * NANOS_PER_MS,
+                    expected_task_indices: &[0],
+                }, // t=8.8s
+                CycleStep {
+                    tick_duration_ns: 800 * NANOS_PER_MS,
+                    expected_task_indices: &[0, 1],
+                }, // t=9.6s
+                CycleStep {
+                    tick_duration_ns: 200 * NANOS_PER_MS,
+                    expected_task_indices: &[2],
+                }, // t=9.8s
+                CycleStep {
+                    tick_duration_ns: 600 * NANOS_PER_MS,
+                    expected_task_indices: &[0],
+                }, // t=10.4s
+                CycleStep {
+                    tick_duration_ns: 400 * NANOS_PER_MS,
+                    expected_task_indices: &[1],
+                }, // t=10.8s
+                CycleStep {
+                    tick_duration_ns: 400 * NANOS_PER_MS,
+                    expected_task_indices: &[0, 2],
+                }, // t=11.2s
+                CycleStep {
+                    tick_duration_ns: 800 * NANOS_PER_MS,
+                    expected_task_indices: &[0, 1],
+                }, // t=12.0s
+                CycleStep {
+                    tick_duration_ns: 600 * NANOS_PER_MS,
+                    expected_task_indices: &[2],
+                }, // t=12.6s
+                CycleStep {
+                    tick_duration_ns: 200 * NANOS_PER_MS,
+                    expected_task_indices: &[0],
+                }, // t=12.8s
+                CycleStep {
+                    tick_duration_ns: 400 * NANOS_PER_MS,
+                    expected_task_indices: &[1],
+                }, // t=13.2s
+                CycleStep {
+                    tick_duration_ns: 400 * NANOS_PER_MS,
+                    expected_task_indices: &[0],
+                }, // t=13.6s
+                CycleStep {
+                    tick_duration_ns: 400 * NANOS_PER_MS,
+                    expected_task_indices: &[2],
+                }, // t=14.0s
+                CycleStep {
+                    tick_duration_ns: 400 * NANOS_PER_MS,
+                    expected_task_indices: &[0, 1],
+                }, // t=14.4s
+                CycleStep {
+                    tick_duration_ns: 800 * NANOS_PER_MS,
+                    expected_task_indices: &[0],
+                }, // t=15.2s
+                CycleStep {
+                    tick_duration_ns: 200 * NANOS_PER_MS,
+                    expected_task_indices: &[2],
+                }, // t=15.4s
+                CycleStep {
+                    tick_duration_ns: 200 * NANOS_PER_MS,
+                    expected_task_indices: &[1],
+                }, // t=15.6s
+                CycleStep {
+                    tick_duration_ns: 400 * NANOS_PER_MS,
+                    expected_task_indices: &[0],
+                }, // t=16.0s
+                CycleStep {
+                    tick_duration_ns: 800 * NANOS_PER_MS,
+                    expected_task_indices: &[0, 1, 2],
+                }, // t=16.8s (LCM)
+            ],
+        },
     ];
 
     for case in test_cases {
