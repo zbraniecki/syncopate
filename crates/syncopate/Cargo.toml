@@ -14,3 +14,4 @@ crossbeam = "0.8"
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
+comfy-table = "7"
