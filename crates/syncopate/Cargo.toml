@@ -15,3 +15,8 @@ crossbeam = "0.8"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 comfy-table = "7"
+divan = "0.1"
+
+[[bench]]
+name = "tick_overhead"
+harness = false
