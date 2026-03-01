@@ -3,11 +3,10 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use jiff::Zoned;
+use syncopate::PeriodicSchedule;
 use syncopate::scheduler::Scheduler;
 use syncopate::system_time::{Clock, SimClock};
 use syncopate::task::{TaskBuilder, Window};
-
-const ITERATIONS: usize = 3;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -15,6 +14,14 @@ struct Args {
     /// Mode: 'real' uses real clock with actual delays, 'emulated' runs instantly.
     #[arg(long, default_value = "emulated")]
     mode: String,
+
+    /// Schedule: 'fixed-rate' (default) or 'fixed-delay'.
+    #[arg(long, default_value = "fixed-rate")]
+    schedule: String,
+
+    /// Number of iterations to run.
+    #[arg(long, default_value_t = 3)]
+    iterations: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -44,8 +51,18 @@ fn main() {
         }
     };
 
+    let schedule = match args.schedule.as_str() {
+        "fixed-rate" => PeriodicSchedule::FixedRate,
+        "fixed-delay" => PeriodicSchedule::FixedDelay,
+        other => {
+            eprintln!("Invalid schedule '{other}'. Use 'fixed-rate' or 'fixed-delay'");
+            std::process::exit(1);
+        }
+    };
+
     println!("=== Simple Periodic Task Example ===");
-    println!("Mode: {}\n", mode);
+    println!("Mode: {}", mode);
+    println!("Schedule: {:?}\n", schedule);
 
     // Construction is mode-specific because the clock type differs.
     // Everything after that is shared via the generic run_loop.
@@ -53,8 +70,8 @@ fn main() {
         Mode::Real => {
             let mut scheduler = Scheduler::new();
             scheduler.set_timer_delay(Duration::from_millis(5));
-            add_tasks(&mut scheduler);
-            run_loop(mode, &mut scheduler, |requested| {
+            add_tasks(&mut scheduler, schedule);
+            run_loop(mode, args.iterations, &mut scheduler, |requested| {
                 // Sleep for the requested duration; return how long we actually slept.
                 let t = Instant::now();
                 std::thread::sleep(requested);
@@ -64,8 +81,8 @@ fn main() {
         Mode::Emulated => {
             let clock = Rc::new(SimClock::new());
             let mut scheduler = Scheduler::new_with_clock(Rc::clone(&clock));
-            add_tasks(&mut scheduler);
-            run_loop(mode, &mut scheduler, |requested| {
+            add_tasks(&mut scheduler, schedule);
+            run_loop(mode, args.iterations, &mut scheduler, |requested| {
                 // Advance the sim clock by exactly the requested amount; no jitter.
                 clock.advance(requested);
                 requested
@@ -78,12 +95,13 @@ fn main() {
 
 // ── Shared setup ──────────────────────────────────────────────────────────────
 
-fn add_tasks<C: Clock>(scheduler: &mut Scheduler<(), C>) {
+fn add_tasks<C: Clock>(scheduler: &mut Scheduler<(), C>, schedule: PeriodicSchedule) {
     let task = TaskBuilder::every(
         Duration::from_millis(500),
         Window::symmetric(Duration::from_millis(100)),
     )
     .name("every_500ms")
+    .schedule(schedule)
     .build()
     .unwrap();
 
@@ -108,7 +126,7 @@ struct TickRow {
     drift_ns: i128,
 }
 
-/// Run the scheduler loop for `ITERATIONS` ticks.
+/// Run the scheduler loop for the given number of ticks.
 ///
 /// `wait` is the only mode-specific piece: given the *requested* sleep duration
 /// it performs the wait and returns the *actual* elapsed duration.
@@ -117,12 +135,13 @@ struct TickRow {
 /// - Emulated mode: advances the sim clock by the exact requested amount.
 fn run_loop<C: Clock>(
     mode: Mode,
+    iterations: usize,
     scheduler: &mut Scheduler<(), C>,
     mut wait: impl FnMut(Duration) -> Duration,
 ) {
     match mode {
-        Mode::Real => println!("Running for {ITERATIONS} iterations with real delays...\n"),
-        Mode::Emulated => println!("Running for {ITERATIONS} iterations (instant)...\n"),
+        Mode::Real => println!("Running for {iterations} iterations with real delays...\n"),
+        Mode::Emulated => println!("Running for {iterations} iterations (instant)...\n"),
     }
 
     print_table_header();
@@ -134,7 +153,7 @@ fn run_loop<C: Clock>(
     // so calculate_next_tick() naturally accounts for processing time.
     let mut tick_duration = scheduler.calculate_next_tick();
 
-    for tick_num in 1..=ITERATIONS {
+    for tick_num in 1..=iterations {
         let (slept_for, work_start, tick_result) = if let Some(requested) = tick_duration {
             let actual = wait(requested);
             let work_start = Instant::now();
@@ -178,7 +197,7 @@ fn run_loop<C: Clock>(
             drift_ns: tick_drift,
         };
 
-        print_table_row(&row, tick_num == ITERATIONS);
+        print_table_row(&row, tick_num == iterations);
 
         // Calculate next tick AFTER all sync work (tick + printing) is done.
         // The scheduler reads `now` here, so the returned sleep naturally
