@@ -1,4 +1,4 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -45,43 +45,24 @@ impl Window {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum PeriodicTiming {
+pub enum TaskType {
     Relative {
         period: Duration,
         window: Window,
-        consecutive_window: Option<Window>,
         schedule: PeriodicSchedule,
     },
-
-    Absolute {
+    Anchored {
         period: Duration,
         offset: Option<Duration>,
         window: Window,
-        consecutive_window: Option<Window>,
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum OneTimeTiming {
-    Relative {
-        delay: Duration,
-        window: Window,
-    },
-
-    Absolute {
-        deadline: SystemTime,
-        window: Window,
-    },
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Repeat {
+    Forever,
+    Times(u32),
 }
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum TaskType {
-    Periodic(PeriodicTiming),
-
-    OneTime(OneTimeTiming),
-}
-
-impl TaskType {}
 
 pub type TaskCallback<Ctx> = fn(&Ctx);
 pub type MissCallback<Ctx> = fn(&Ctx);
@@ -89,24 +70,11 @@ pub type MissCallback<Ctx> = fn(&Ctx);
 #[derive(Debug)]
 pub struct Task<Ctx = ()> {
     pub task_type: TaskType,
+    pub repeat: Repeat,
     pub priority: u8,
     pub name: Option<String>,
     pub on_execute: Option<TaskCallback<Ctx>>,
     pub on_miss: Option<MissCallback<Ctx>>,
-}
-
-impl<Ctx> Task<Ctx> {
-    pub fn next_fire(&self) -> Duration {
-        match &self.task_type {
-            TaskType::Periodic(periodic_timing) => match periodic_timing {
-                PeriodicTiming::Relative { period, .. } => {
-                    return *period;
-                }
-                PeriodicTiming::Absolute { .. } => todo!(),
-            },
-            TaskType::OneTime(..) => todo!(),
-        }
-    }
 }
 
 #[derive(Debug, Error)]
@@ -119,11 +87,11 @@ pub enum TaskBuildError {
 
 pub struct TaskBuilder<Ctx = ()> {
     task_type: Option<TaskType>,
+    repeat: Repeat,
     priority: u8,
     name: Option<String>,
     on_execute: Option<TaskCallback<Ctx>>,
     on_miss: Option<MissCallback<Ctx>>,
-    consecutive_window: Option<Window>,
     schedule: PeriodicSchedule,
 }
 
@@ -131,55 +99,80 @@ impl<Ctx> TaskBuilder<Ctx> {
     pub fn new() -> Self {
         Self {
             task_type: None,
+            repeat: Repeat::Forever,
             priority: 0,
             name: None,
             on_execute: None,
             on_miss: None,
-            consecutive_window: None,
             schedule: PeriodicSchedule::default(),
         }
     }
 
+    // -- Relative builders --
+
     pub fn every(period: Duration, window: Window) -> Self {
-        Self::new().task_type(TaskType::Periodic(PeriodicTiming::Relative {
+        Self::new().task_type(TaskType::Relative {
             period,
             window,
-            consecutive_window: None,
             schedule: PeriodicSchedule::default(),
-        }))
-    }
-
-    pub fn every_at_boundary(period: Duration, window: Window) -> Self {
-        Self::new().task_type(TaskType::Periodic(PeriodicTiming::Absolute {
-            period,
-            offset: None,
-            window,
-            consecutive_window: None,
-        }))
-    }
-
-    pub fn every_with_offset(period: Duration, offset: Duration, window: Window) -> Self {
-        Self::new().task_type(TaskType::Periodic(PeriodicTiming::Absolute {
-            period,
-            offset: Some(offset),
-            window,
-            consecutive_window: None,
-        }))
+        })
     }
 
     pub fn once_after(delay: Duration, window: Window) -> Self {
-        Self::new().task_type(TaskType::OneTime(OneTimeTiming::Relative { delay, window }))
-    }
-
-    pub fn once_at(deadline: SystemTime, window: Window) -> Self {
-        Self::new().task_type(TaskType::OneTime(OneTimeTiming::Absolute {
-            deadline,
+        let mut b = Self::new().task_type(TaskType::Relative {
+            period: delay,
             window,
-        }))
+            schedule: PeriodicSchedule::default(),
+        });
+        b.repeat = Repeat::Times(1);
+        b
     }
 
-    pub fn task_type(mut self, task_type: TaskType) -> Self {
+    // -- Anchored builders --
+
+    pub fn every_at_boundary(period: Duration, window: Window) -> Self {
+        Self::new().task_type(TaskType::Anchored {
+            period,
+            offset: None,
+            window,
+        })
+    }
+
+    pub fn every_with_offset(period: Duration, offset: Duration, window: Window) -> Self {
+        Self::new().task_type(TaskType::Anchored {
+            period,
+            offset: Some(offset),
+            window,
+        })
+    }
+
+    pub fn at_boundary(period: Duration, window: Window) -> Self {
+        let mut b = Self::new().task_type(TaskType::Anchored {
+            period,
+            offset: None,
+            window,
+        });
+        b.repeat = Repeat::Times(1);
+        b
+    }
+
+    pub fn at_next(period: Duration, offset: Duration, window: Window) -> Self {
+        let mut b = Self::new().task_type(TaskType::Anchored {
+            period,
+            offset: Some(offset),
+            window,
+        });
+        b.repeat = Repeat::Times(1);
+        b
+    }
+
+    fn task_type(mut self, task_type: TaskType) -> Self {
         self.task_type = Some(task_type);
+        self
+    }
+
+    pub fn repeat(mut self, repeat: Repeat) -> Self {
+        self.repeat = repeat;
         self
     }
 
@@ -203,11 +196,6 @@ impl<Ctx> TaskBuilder<Ctx> {
         self
     }
 
-    pub fn with_consecutive_window(mut self, window: Window) -> Self {
-        self.consecutive_window = Some(window);
-        self
-    }
-
     pub fn schedule(mut self, schedule: PeriodicSchedule) -> Self {
         self.schedule = schedule;
         self
@@ -216,33 +204,17 @@ impl<Ctx> TaskBuilder<Ctx> {
     pub fn build(self) -> Result<Task<Ctx>, TaskBuildError> {
         let mut task_type = self.task_type.ok_or(TaskBuildError::NoTaskType)?;
 
-        if let Some(consecutive_window) = self.consecutive_window {
-            match &mut task_type {
-                TaskType::Periodic(PeriodicTiming::Relative {
-                    consecutive_window: cw,
-                    ..
-                }) => {
-                    *cw = Some(consecutive_window);
-                }
-                TaskType::Periodic(PeriodicTiming::Absolute {
-                    consecutive_window: cw,
-                    ..
-                }) => {
-                    *cw = Some(consecutive_window);
-                }
-                TaskType::OneTime(_) => {}
-            }
-        }
-
-        if let TaskType::Periodic(PeriodicTiming::Relative { schedule: s, .. }) = &mut task_type {
+        // Apply the builder's schedule to Relative tasks.
+        if let TaskType::Relative { schedule: s, .. } = &mut task_type {
             *s = self.schedule;
         }
 
-        if let TaskType::Periodic(PeriodicTiming::Absolute {
+        // Validate offset < period for Anchored tasks.
+        if let TaskType::Anchored {
             period,
             offset: Some(offset),
             ..
-        }) = &task_type
+        } = &task_type
         {
             if offset >= period {
                 return Err(TaskBuildError::OffsetExceedsPeriod {
@@ -254,6 +226,7 @@ impl<Ctx> TaskBuilder<Ctx> {
 
         Ok(Task {
             task_type,
+            repeat: self.repeat,
             priority: self.priority,
             name: self.name,
             on_execute: self.on_execute,
@@ -265,44 +238,5 @@ impl<Ctx> TaskBuilder<Ctx> {
 impl<Ctx> Default for TaskBuilder<Ctx> {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-pub struct Time;
-
-impl Time {
-    pub fn hms(hours: u32, minutes: u32, seconds: u32) -> Duration {
-        Duration::from_secs(hours as u64 * 3600 + minutes as u64 * 60 + seconds as u64)
-    }
-
-    pub fn hm(hours: u32, minutes: u32) -> Duration {
-        Self::hms(hours, minutes, 0)
-    }
-
-    pub fn today_at(hours: u32, minutes: u32, seconds: u32) -> Option<SystemTime> {
-        let now = SystemTime::now();
-        let since_epoch = now.duration_since(UNIX_EPOCH).ok()?;
-
-        let secs_today = since_epoch.as_secs() % (24 * 3600);
-        let target_secs = hours as u64 * 3600 + minutes as u64 * 60 + seconds as u64;
-
-        if target_secs > secs_today {
-            let wait = Duration::from_secs(target_secs - secs_today);
-            Some(now + wait)
-        } else {
-            let wait = Duration::from_secs(24 * 3600 - secs_today + target_secs);
-            Some(now + wait)
-        }
-    }
-
-    pub fn tomorrow_at(hours: u32, minutes: u32, seconds: u32) -> SystemTime {
-        let now = SystemTime::now();
-        let since_epoch = now.duration_since(UNIX_EPOCH).unwrap();
-
-        let secs_today = since_epoch.as_secs() % (24 * 3600);
-        let target_secs = hours as u64 * 3600 + minutes as u64 * 60 + seconds as u64;
-        let wait = Duration::from_secs(24 * 3600 - secs_today + target_secs);
-
-        now + wait
     }
 }

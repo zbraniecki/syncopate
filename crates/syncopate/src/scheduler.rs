@@ -1,5 +1,5 @@
 use crate::system_time::{Clock, MonoInstant, RealClock, WallInstant};
-use crate::task::{PeriodicSchedule, PeriodicTiming, Task, TaskType};
+use crate::task::{PeriodicSchedule, Repeat, Task, TaskType};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -60,6 +60,7 @@ struct ScheduledTask<Ctx = ()> {
     task: Task<Ctx>,
     last_fired: Option<MonoInstant>,
     last_wall_deadline: Option<WallInstant>,
+    remaining: Option<u32>, // None = forever, Some(n) = n fires left
 }
 
 pub struct Scheduler<Ctx = (), C: Clock = RealClock> {
@@ -100,7 +101,7 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
 
     pub fn add_task(&mut self, task: Task<Ctx>) -> Result<(), AddTaskError> {
         let last_wall_deadline = match &task.task_type {
-            TaskType::Periodic(PeriodicTiming::Absolute { period, offset, .. }) => {
+            TaskType::Anchored { period, offset, .. } => {
                 let wall_now = self.clock.wall_now();
                 let offset_dur = offset.unwrap_or(Duration::ZERO);
                 floor_wall_deadline(wall_now, *period, offset_dur)
@@ -108,36 +109,37 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
             _ => None,
         };
 
+        let remaining = match task.repeat {
+            Repeat::Forever => None,
+            Repeat::Times(n) => Some(n),
+        };
+
         self.tasks.push(ScheduledTask {
             task,
             last_fired: None,
             last_wall_deadline,
+            remaining,
         });
         Ok(())
     }
 
     /// Returns how long the caller should sleep before calling `tick`.
-    ///
-    /// For each relative periodic task the next wakeup point is
-    /// `(anchor + period) - window.early` — the earliest moment the task is
-    /// allowed to fire.  We return the duration from *now* until the soonest
-    /// such point across all tasks, minus `timer_delay` to compensate for
-    /// known OS wakeup latency.
-    ///
-    /// Returns `Some(Duration::ZERO)` when a task is already inside or past
-    /// its window (tick should be called immediately), and `None` when there
-    /// are no schedulable tasks.
     pub fn calculate_next_tick(&self) -> Option<Duration> {
         let now = self.clock.monotonic_now();
         let mut soonest: Option<MonoInstant> = None;
 
         for task in &self.tasks {
+            // Skip exhausted tasks.
+            if task.remaining == Some(0) {
+                continue;
+            }
+
             let mono_deadline = match &task.task.task_type {
-                TaskType::Periodic(PeriodicTiming::Relative { period, .. }) => {
+                TaskType::Relative { period, .. } => {
                     let anchor = task.last_fired.unwrap_or(self.started_at);
                     anchor + *period
                 }
-                TaskType::Periodic(PeriodicTiming::Absolute { period, offset, .. }) => {
+                TaskType::Anchored { period, offset, .. } => {
                     let wall_now = self.clock.wall_now();
                     let offset_dur = offset.unwrap_or(Duration::ZERO);
                     let deadline = next_absolute_deadline(
@@ -155,7 +157,6 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
 
                     now + wait
                 }
-                _ => continue,
             };
 
             soonest = Some(match soonest {
@@ -172,18 +173,20 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
     }
 
     pub fn tick(&mut self) -> TickResult<'_, Ctx> {
+        // Evict tasks exhausted in a previous tick.
+        self.tasks.retain(|t| t.remaining != Some(0));
+
         let now = self.clock.monotonic_now();
         let mut fired = vec![];
         let mut missed = vec![];
 
         for task in &mut self.tasks {
             match &task.task.task_type {
-                TaskType::Periodic(PeriodicTiming::Relative {
+                TaskType::Relative {
                     period,
                     window,
                     schedule,
-                    ..
-                }) => {
+                } => {
                     let (period, window, schedule) = (*period, *window, *schedule);
                     let anchor = task.last_fired.unwrap_or(self.started_at);
                     let next_deadline = anchor + period;
@@ -202,6 +205,9 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
                             PeriodicSchedule::FixedRate => next_deadline,
                             PeriodicSchedule::FixedDelay => now,
                         });
+                        if let Some(ref mut r) = task.remaining {
+                            *r = r.saturating_sub(1);
+                        }
                         fired.push(TaskExecution {
                             task: &task.task,
                             drift,
@@ -214,12 +220,11 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
                         });
                     }
                 }
-                TaskType::Periodic(PeriodicTiming::Absolute {
+                TaskType::Anchored {
                     period,
                     offset,
                     window,
-                    ..
-                }) => {
+                } => {
                     let (period, offset_dur, window) =
                         (*period, offset.unwrap_or(Duration::ZERO), *window);
                     let wall_now = self.clock.wall_now();
@@ -235,10 +240,9 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
                     let window_end = deadline + window.late;
 
                     if wall_now < window_start {
-                        continue; // Not yet due.
+                        continue;
                     }
 
-                    // Drift is wall-clock based for absolute tasks.
                     let drift = if wall_now.as_nanos() > deadline.as_nanos() {
                         Drift::Late(Duration::from_nanos(
                             wall_now.as_nanos() - deadline.as_nanos(),
@@ -254,6 +258,9 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
                     if wall_now <= window_end {
                         task.last_wall_deadline = Some(deadline);
                         task.last_fired = Some(now);
+                        if let Some(ref mut r) = task.remaining {
+                            *r = r.saturating_sub(1);
+                        }
                         fired.push(TaskExecution {
                             task: &task.task,
                             drift,
@@ -267,7 +274,6 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
                         });
                     }
                 }
-                _ => continue,
             }
         }
 
@@ -288,11 +294,6 @@ fn calculate_drift(now: MonoInstant, deadline: MonoInstant) -> Drift {
 
 /// Given the current wall time and the task's last serviced deadline, return
 /// the next deadline that needs evaluation.
-///
-/// After an early fire, `last_wall_deadline` may be *ahead* of the floor
-/// deadline (we serviced a future boundary). The `>=` comparison handles this
-/// correctly — any floor deadline at or below the last serviced one is already
-/// covered.
 fn next_absolute_deadline(
     wall_now: WallInstant,
     period: Duration,
@@ -312,9 +313,6 @@ fn next_absolute_deadline(
 }
 
 /// Compute the most recent wall-clock deadline at or before `wall_now`.
-///
-/// Deadlines form the series: offset, offset + period, offset + 2·period, …
-/// Returns `None` if `wall_now` is before the first deadline (`offset`).
 fn floor_wall_deadline(
     wall_now: WallInstant,
     period: Duration,
