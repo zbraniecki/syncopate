@@ -1,4 +1,4 @@
-use crate::system_time::{Clock, MonoInstant, RealClock};
+use crate::system_time::{Clock, MonoInstant, RealClock, WallInstant};
 use crate::task::{PeriodicSchedule, PeriodicTiming, Task, TaskType};
 use std::time::Duration;
 use thiserror::Error;
@@ -59,6 +59,7 @@ pub struct TickResult<'a, Ctx = ()> {
 struct ScheduledTask<Ctx = ()> {
     task: Task<Ctx>,
     last_fired: Option<MonoInstant>,
+    last_wall_deadline: Option<WallInstant>,
 }
 
 pub struct Scheduler<Ctx = (), C: Clock = RealClock> {
@@ -98,9 +99,19 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
     }
 
     pub fn add_task(&mut self, task: Task<Ctx>) -> Result<(), AddTaskError> {
+        let last_wall_deadline = match &task.task_type {
+            TaskType::Periodic(PeriodicTiming::Absolute { period, offset, .. }) => {
+                let wall_now = self.clock.wall_now();
+                let offset_dur = offset.unwrap_or(Duration::ZERO);
+                floor_wall_deadline(wall_now, *period, offset_dur)
+            }
+            _ => None,
+        };
+
         self.tasks.push(ScheduledTask {
             task,
             last_fired: None,
+            last_wall_deadline,
         });
         Ok(())
     }
@@ -121,17 +132,35 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
         let mut soonest: Option<MonoInstant> = None;
 
         for task in &self.tasks {
-            let period = match &task.task.task_type {
-                TaskType::Periodic(PeriodicTiming::Relative { period, .. }) => *period,
+            let mono_deadline = match &task.task.task_type {
+                TaskType::Periodic(PeriodicTiming::Relative { period, .. }) => {
+                    let anchor = task.last_fired.unwrap_or(self.started_at);
+                    anchor + *period
+                }
+                TaskType::Periodic(PeriodicTiming::Absolute { period, offset, .. }) => {
+                    let wall_now = self.clock.wall_now();
+                    let offset_dur = offset.unwrap_or(Duration::ZERO);
+                    let deadline = next_absolute_deadline(
+                        wall_now,
+                        *period,
+                        offset_dur,
+                        task.last_wall_deadline,
+                    );
+
+                    let wait = if deadline > wall_now {
+                        Duration::from_nanos(deadline.as_nanos() - wall_now.as_nanos())
+                    } else {
+                        Duration::ZERO
+                    };
+
+                    now + wait
+                }
                 _ => continue,
             };
 
-            let anchor = task.last_fired.unwrap_or(self.started_at);
-            let deadline = anchor + period;
-
             soonest = Some(match soonest {
-                None => deadline,
-                Some(s) if deadline < s => deadline,
+                None => mono_deadline,
+                Some(s) if mono_deadline < s => mono_deadline,
                 Some(s) => s,
             });
         }
@@ -148,48 +177,97 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
         let mut missed = vec![];
 
         for task in &mut self.tasks {
-            let (period, window, schedule) = match &task.task.task_type {
+            match &task.task.task_type {
                 TaskType::Periodic(PeriodicTiming::Relative {
                     period,
                     window,
                     schedule,
                     ..
-                }) => (*period, *window, *schedule),
+                }) => {
+                    let (period, window, schedule) = (*period, *window, *schedule);
+                    let anchor = task.last_fired.unwrap_or(self.started_at);
+                    let next_deadline = anchor + period;
+
+                    let window_start = next_deadline - window.early;
+                    let window_end = next_deadline + window.late;
+
+                    if now < window_start {
+                        continue;
+                    }
+
+                    let drift = calculate_drift(now, next_deadline);
+
+                    if now <= window_end {
+                        task.last_fired = Some(match schedule {
+                            PeriodicSchedule::FixedRate => next_deadline,
+                            PeriodicSchedule::FixedDelay => now,
+                        });
+                        fired.push(TaskExecution {
+                            task: &task.task,
+                            drift,
+                        });
+                    } else {
+                        task.last_fired = Some(now);
+                        missed.push(TaskExecution {
+                            task: &task.task,
+                            drift,
+                        });
+                    }
+                }
+                TaskType::Periodic(PeriodicTiming::Absolute {
+                    period,
+                    offset,
+                    window,
+                    ..
+                }) => {
+                    let (period, offset_dur, window) =
+                        (*period, offset.unwrap_or(Duration::ZERO), *window);
+                    let wall_now = self.clock.wall_now();
+
+                    let deadline = next_absolute_deadline(
+                        wall_now,
+                        period,
+                        offset_dur,
+                        task.last_wall_deadline,
+                    );
+
+                    let window_start = deadline - window.early;
+                    let window_end = deadline + window.late;
+
+                    if wall_now < window_start {
+                        continue; // Not yet due.
+                    }
+
+                    // Drift is wall-clock based for absolute tasks.
+                    let drift = if wall_now.as_nanos() > deadline.as_nanos() {
+                        Drift::Late(Duration::from_nanos(
+                            wall_now.as_nanos() - deadline.as_nanos(),
+                        ))
+                    } else if wall_now.as_nanos() < deadline.as_nanos() {
+                        Drift::Early(Duration::from_nanos(
+                            deadline.as_nanos() - wall_now.as_nanos(),
+                        ))
+                    } else {
+                        Drift::OnTime
+                    };
+
+                    if wall_now <= window_end {
+                        task.last_wall_deadline = Some(deadline);
+                        task.last_fired = Some(now);
+                        fired.push(TaskExecution {
+                            task: &task.task,
+                            drift,
+                        });
+                    } else {
+                        task.last_wall_deadline = Some(deadline);
+                        task.last_fired = Some(now);
+                        missed.push(TaskExecution {
+                            task: &task.task,
+                            drift,
+                        });
+                    }
+                }
                 _ => continue,
-            };
-
-            let anchor = task.last_fired.unwrap_or(self.started_at);
-            let next_deadline = anchor + period;
-
-            let window_start = next_deadline - window.early;
-            let window_end = next_deadline + window.late;
-
-            if now < window_start {
-                // Before the window — not yet due.
-                continue;
-            }
-
-            let drift = calculate_drift(now, next_deadline);
-
-            if now <= window_end {
-                // Within the window — fire.
-                task.last_fired = Some(match schedule {
-                    PeriodicSchedule::FixedRate => next_deadline,
-                    PeriodicSchedule::FixedDelay => now,
-                });
-                fired.push(TaskExecution {
-                    task: &task.task,
-                    drift,
-                });
-            } else {
-                // Past window_end — missed.
-                // Advance last_fired so the next tick doesn't re-report the same miss.
-                // Always anchor to now — the cadence is already broken.
-                task.last_fired = Some(now);
-                missed.push(TaskExecution {
-                    task: &task.task,
-                    drift,
-                });
             }
         }
 
@@ -206,6 +284,52 @@ fn calculate_drift(now: MonoInstant, deadline: MonoInstant) -> Drift {
     } else {
         Drift::OnTime
     }
+}
+
+/// Given the current wall time and the task's last serviced deadline, return
+/// the next deadline that needs evaluation.
+///
+/// After an early fire, `last_wall_deadline` may be *ahead* of the floor
+/// deadline (we serviced a future boundary). The `>=` comparison handles this
+/// correctly — any floor deadline at or below the last serviced one is already
+/// covered.
+fn next_absolute_deadline(
+    wall_now: WallInstant,
+    period: Duration,
+    offset_dur: Duration,
+    last_wall_deadline: Option<WallInstant>,
+) -> WallInstant {
+    match floor_wall_deadline(wall_now, period, offset_dur) {
+        Some(current) if last_wall_deadline.is_some_and(|last| last >= current) => {
+            last_wall_deadline.unwrap() + period
+        }
+        Some(current) => current,
+        None => match last_wall_deadline {
+            Some(last) if last >= WallInstant(offset_dur.as_nanos() as u64) => last + period,
+            _ => WallInstant(offset_dur.as_nanos() as u64),
+        },
+    }
+}
+
+/// Compute the most recent wall-clock deadline at or before `wall_now`.
+///
+/// Deadlines form the series: offset, offset + period, offset + 2·period, …
+/// Returns `None` if `wall_now` is before the first deadline (`offset`).
+fn floor_wall_deadline(
+    wall_now: WallInstant,
+    period: Duration,
+    offset: Duration,
+) -> Option<WallInstant> {
+    let now_nanos = wall_now.as_nanos();
+    let offset_nanos = offset.as_nanos() as u64;
+
+    if now_nanos < offset_nanos {
+        return None;
+    }
+
+    let period_nanos = period.as_nanos() as u64;
+    let aligned = ((now_nanos - offset_nanos) / period_nanos) * period_nanos + offset_nanos;
+    Some(WallInstant(aligned))
 }
 
 /// Format a `Duration` using the most readable unit.

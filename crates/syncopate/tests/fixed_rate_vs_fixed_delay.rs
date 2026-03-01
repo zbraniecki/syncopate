@@ -31,7 +31,11 @@ fn sync_work_after_on_time_tick_compensated_equally() {
         clock.advance(Duration::from_millis(500));
         let result = scheduler.tick();
         assert_eq!(result.fired.len(), 1, "{schedule:?}: should fire");
-        assert_eq!(result.fired[0].drift, Drift::OnTime, "{schedule:?}: on time");
+        assert_eq!(
+            result.fired[0].drift,
+            Drift::OnTime,
+            "{schedule:?}: on time"
+        );
 
         // Simulate 30ms of sync work after tick.
         clock.advance(Duration::from_millis(30));
@@ -62,7 +66,10 @@ fn fixed_rate_catches_up_after_late_fire() {
     clock.advance(Duration::from_millis(520));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
-    assert_eq!(result.fired[0].drift, Drift::Late(Duration::from_millis(20)));
+    assert_eq!(
+        result.fired[0].drift,
+        Drift::Late(Duration::from_millis(20))
+    );
 
     // FixedRate anchored last_fired to ideal deadline (500ms).
     // Next deadline = 1000ms. Now = 520ms. Sleep = 1000 - 520 = 480ms.
@@ -96,7 +103,10 @@ fn fixed_delay_does_not_catch_up_after_late_fire() {
     clock.advance(Duration::from_millis(520));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
-    assert_eq!(result.fired[0].drift, Drift::Late(Duration::from_millis(20)));
+    assert_eq!(
+        result.fired[0].drift,
+        Drift::Late(Duration::from_millis(20))
+    );
 
     // FixedDelay anchored last_fired to now (520ms).
     // Next deadline = 520 + 500 = 1020ms. Now = 520ms. Sleep = 500ms.
