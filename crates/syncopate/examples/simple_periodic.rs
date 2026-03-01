@@ -7,7 +7,7 @@ use syncopate::scheduler::Scheduler;
 use syncopate::system_time::{Clock, SimClock};
 use syncopate::task::{TaskBuilder, Window};
 
-const ITERATIONS: usize = 15;
+const ITERATIONS: usize = 3;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -101,6 +101,7 @@ struct TickRow {
     time: String,
     tick_duration: Option<Duration>,
     slept_for: Option<Duration>,
+    sync_work: Option<Duration>,
     tasks_executed: String,
     tasks_missed: String,
     /// Signed total drift for this tick in nanoseconds (sum across all tasks).
@@ -128,15 +129,20 @@ fn run_loop<C: Clock>(
 
     let mut cumulative_drift = 0i128;
 
-    for tick_num in 1..=ITERATIONS {
-        let tick_duration = scheduler.calculate_next_tick();
+    // Compute the first sleep before the loop. Each subsequent call happens
+    // at the end of the iteration, after ALL sync work (tick + printing),
+    // so calculate_next_tick() naturally accounts for processing time.
+    let mut tick_duration = scheduler.calculate_next_tick();
 
-        let (slept_for, tick_result) = if let Some(requested) = tick_duration {
+    for tick_num in 1..=ITERATIONS {
+        let (slept_for, work_start, tick_result) = if let Some(requested) = tick_duration {
             let actual = wait(requested);
+            let work_start = Instant::now();
             let result = scheduler.tick();
-            (Some(actual), result)
+            (Some(actual), Some(work_start), result)
         } else {
             (
+                None,
                 None,
                 syncopate::TickResult {
                     fired: vec![],
@@ -145,6 +151,7 @@ fn run_loop<C: Clock>(
             )
         };
 
+        // Extract data from tick_result before releasing the borrow on scheduler.
         let tick_drift: i128 = tick_result
             .fired
             .iter()
@@ -156,18 +163,27 @@ fn run_loop<C: Clock>(
                 .map(|e| e.drift.as_nanos_signed())
                 .sum::<i128>();
         cumulative_drift += tick_drift;
+        let tasks_executed = format_tasks(tick_result.fired.iter());
+        let tasks_missed = format_tasks(tick_result.missed.iter());
+        drop(tick_result);
 
         let row = TickRow {
             tick_num,
             time: Zoned::now().strftime("%H:%M:%S%.3f").to_string(),
             tick_duration,
             slept_for,
-            tasks_executed: format_tasks(tick_result.fired.iter()),
-            tasks_missed: format_tasks(tick_result.missed.iter()),
+            sync_work: work_start.map(|s| s.elapsed()),
+            tasks_executed,
+            tasks_missed,
             drift_ns: tick_drift,
         };
 
         print_table_row(&row, tick_num == ITERATIONS);
+
+        // Calculate next tick AFTER all sync work (tick + printing) is done.
+        // The scheduler reads `now` here, so the returned sleep naturally
+        // compensates for all processing time in this iteration.
+        tick_duration = scheduler.calculate_next_tick();
     }
 
     print_table_footer(cumulative_drift);
@@ -191,7 +207,7 @@ fn format_tasks<'a, Ctx: 'a>(
 
 // ── Table rendering ───────────────────────────────────────────────────────────
 
-const COL_WIDTHS: [usize; 7] = [4, 18, 18, 12, 25, 25, 12];
+const COL_WIDTHS: [usize; 8] = [4, 18, 18, 12, 12, 25, 25, 12];
 
 fn print_horizontal_line(left: &str, mid: &str, right: &str, fill: &str) {
     print!("{left}");
@@ -207,11 +223,12 @@ fn print_horizontal_line(left: &str, mid: &str, right: &str, fill: &str) {
 fn print_table_header() {
     print_horizontal_line("┌", "┬", "┐", "─");
     println!(
-        "│ {:<w0$} │ {:<w1$} │ {:<w2$} │ {:<w3$} │ {:<w4$} │ {:<w5$} │ {:<w6$} │",
+        "│ {:<w0$} │ {:<w1$} │ {:<w2$} │ {:<w3$} │ {:<w4$} │ {:<w5$} │ {:<w6$} │ {:<w7$} │",
         "Tick",
         "Scheduled sleep",
         "Woke up after",
         "Time",
+        "Sync work",
         "Tasks Executed",
         "Tasks Missed",
         "Total Drift",
@@ -222,17 +239,19 @@ fn print_table_header() {
         w4 = COL_WIDTHS[4],
         w5 = COL_WIDTHS[5],
         w6 = COL_WIDTHS[6],
+        w7 = COL_WIDTHS[7],
     );
     print_horizontal_line("╞", "╪", "╡", "═");
 }
 
 fn print_table_row(row: &TickRow, is_last: bool) {
     println!(
-        "│ {:<w0$} │ {:<w1$} │ {:<w2$} │ {:<w3$} │ {:<w4$} │ {:<w5$} │ {:<w6$} │",
+        "│ {:<w0$} │ {:<w1$} │ {:<w2$} │ {:<w3$} │ {:<w4$} │ {:<w5$} │ {:<w6$} │ {:<w7$} │",
         row.tick_num,
         fmt_opt_duration(row.tick_duration),
         fmt_opt_duration(row.slept_for),
         row.time,
+        fmt_opt_duration(row.sync_work),
         row.tasks_executed,
         row.tasks_missed,
         fmt_drift_ns(row.drift_ns),
@@ -243,6 +262,7 @@ fn print_table_row(row: &TickRow, is_last: bool) {
         w4 = COL_WIDTHS[4],
         w5 = COL_WIDTHS[5],
         w6 = COL_WIDTHS[6],
+        w7 = COL_WIDTHS[7],
     );
     if !is_last {
         print_horizontal_line("├", "┼", "┤", "─");

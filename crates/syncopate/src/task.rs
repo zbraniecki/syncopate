@@ -1,6 +1,17 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PeriodicSchedule {
+    /// Period measured from ideal deadline to ideal deadline.
+    /// Self-correcting: tick processing time doesn't affect cadence.
+    #[default]
+    FixedRate,
+    /// Period measured from actual fire time.
+    /// Tick processing time extends the total cycle.
+    FixedDelay,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Window {
     pub early: Duration,
@@ -39,6 +50,7 @@ pub enum PeriodicTiming {
         period: Duration,
         window: Window,
         consecutive_window: Option<Window>,
+        schedule: PeriodicSchedule,
     },
 
     Absolute {
@@ -112,6 +124,7 @@ pub struct TaskBuilder<Ctx = ()> {
     on_execute: Option<TaskCallback<Ctx>>,
     on_miss: Option<MissCallback<Ctx>>,
     consecutive_window: Option<Window>,
+    schedule: PeriodicSchedule,
 }
 
 impl<Ctx> TaskBuilder<Ctx> {
@@ -123,6 +136,7 @@ impl<Ctx> TaskBuilder<Ctx> {
             on_execute: None,
             on_miss: None,
             consecutive_window: None,
+            schedule: PeriodicSchedule::default(),
         }
     }
 
@@ -131,6 +145,7 @@ impl<Ctx> TaskBuilder<Ctx> {
             period,
             window,
             consecutive_window: None,
+            schedule: PeriodicSchedule::default(),
         }))
     }
 
@@ -193,6 +208,11 @@ impl<Ctx> TaskBuilder<Ctx> {
         self
     }
 
+    pub fn schedule(mut self, schedule: PeriodicSchedule) -> Self {
+        self.schedule = schedule;
+        self
+    }
+
     pub fn build(self) -> Result<Task<Ctx>, TaskBuildError> {
         let mut task_type = self.task_type.ok_or(TaskBuildError::NoTaskType)?;
 
@@ -212,6 +232,10 @@ impl<Ctx> TaskBuilder<Ctx> {
                 }
                 TaskType::OneTime(_) => {}
             }
+        }
+
+        if let TaskType::Periodic(PeriodicTiming::Relative { schedule: s, .. }) = &mut task_type {
+            *s = self.schedule;
         }
 
         if let TaskType::Periodic(PeriodicTiming::Absolute {

@@ -1,6 +1,11 @@
 use std::rc::Rc;
 use std::time::Duration;
-use syncopate::{Window, scheduler::Scheduler, system_time::SimClock, task::TaskBuilder};
+use syncopate::{
+    Window,
+    scheduler::{Drift, Scheduler},
+    system_time::SimClock,
+    task::TaskBuilder,
+};
 
 fn make_scheduler() -> (Rc<SimClock>, Scheduler<(), Rc<SimClock>>) {
     let clock = Rc::new(SimClock::new());
@@ -90,7 +95,10 @@ fn task_fires_when_past_deadline_within_late_window() {
     clock.advance(Duration::from_millis(550));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
-    assert_eq!(result.fired[0].drift_ms, 50);
+    assert_eq!(
+        result.fired[0].drift,
+        Drift::Late(Duration::from_millis(50))
+    );
     assert_eq!(result.missed.len(), 0);
 }
 
@@ -112,7 +120,10 @@ fn task_fires_early_within_early_window() {
     clock.advance(Duration::from_millis(420));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
-    assert_eq!(result.fired[0].drift_ms, -80);
+    assert_eq!(
+        result.fired[0].drift,
+        Drift::Early(Duration::from_millis(80))
+    );
     assert_eq!(result.missed.len(), 0);
 }
 
@@ -132,7 +143,10 @@ fn task_missed_when_past_late_window() {
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 0);
     assert_eq!(result.missed.len(), 1);
-    assert_eq!(result.missed[0].drift_ms, 50);
+    assert_eq!(
+        result.missed[0].drift,
+        Drift::Late(Duration::from_millis(50))
+    );
 }
 
 #[test]

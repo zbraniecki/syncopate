@@ -1,5 +1,5 @@
 use crate::system_time::{Clock, MonoInstant, RealClock};
-use crate::task::{PeriodicTiming, Task, TaskType};
+use crate::task::{PeriodicSchedule, PeriodicTiming, Task, TaskType};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -121,10 +121,8 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
         let mut soonest: Option<MonoInstant> = None;
 
         for task in &self.tasks {
-            let (period, window) = match &task.task.task_type {
-                TaskType::Periodic(PeriodicTiming::Relative { period, window, .. }) => {
-                    (*period, *window)
-                }
+            let period = match &task.task.task_type {
+                TaskType::Periodic(PeriodicTiming::Relative { period, .. }) => *period,
                 _ => continue,
             };
 
@@ -150,10 +148,13 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
         let mut missed = vec![];
 
         for task in &mut self.tasks {
-            let (period, window) = match &task.task.task_type {
-                TaskType::Periodic(PeriodicTiming::Relative { period, window, .. }) => {
-                    (*period, *window)
-                }
+            let (period, window, schedule) = match &task.task.task_type {
+                TaskType::Periodic(PeriodicTiming::Relative {
+                    period,
+                    window,
+                    schedule,
+                    ..
+                }) => (*period, *window, *schedule),
                 _ => continue,
             };
 
@@ -172,7 +173,10 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
 
             if now <= window_end {
                 // Within the window — fire.
-                task.last_fired = Some(now);
+                task.last_fired = Some(match schedule {
+                    PeriodicSchedule::FixedRate => next_deadline,
+                    PeriodicSchedule::FixedDelay => now,
+                });
                 fired.push(TaskExecution {
                     task: &task.task,
                     drift,
@@ -180,6 +184,7 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
             } else {
                 // Past window_end — missed.
                 // Advance last_fired so the next tick doesn't re-report the same miss.
+                // Always anchor to now — the cadence is already broken.
                 task.last_fired = Some(now);
                 missed.push(TaskExecution {
                     task: &task.task,
