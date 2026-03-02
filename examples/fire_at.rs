@@ -29,11 +29,11 @@ fn main() {
         }
     };
 
-    println!("Scheduling one-shot task to fire in {}", fmt_duration(delay));
     println!(
-        "Now:    {}",
-        Zoned::now().strftime("%H:%M:%S%.3f")
+        "Scheduling one-shot task to fire in {}",
+        fmt_duration(delay)
     );
+    println!("Now:    {}", Zoned::now().strftime("%H:%M:%S%.3f"));
 
     let mut scheduler: Scheduler = Scheduler::new();
     scheduler.set_timer_delay(Duration::from_millis(5));
