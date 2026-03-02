@@ -1,10 +1,27 @@
-[workspace]
-members = ["crates/syncopate"]
-resolver = "2"
-
-[workspace.package]
+[package]
+name = "syncopate"
 version = "0.0.1"
-authors = ["Zibi Braniecki <zibi@braniecki.net>"]
 edition = "2024"
+authors = ["Zibi Braniecki <zibi@braniecki.net>"]
 license = "MIT OR Apache-2.0"
+description = "A hierarchical, power-aware task scheduler for Rust applications requiring precise timing control"
 repository = "https://github.com/zbraniecki/syncopate"
+categories = ["asynchronous", "concurrency", "algorithms"]
+
+[dependencies]
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+comfy-table = "7"
+divan = "0.1"
+jiff = "0.2"
+
+# [[bench]]
+# name = "tick_overhead"
+# harness = false
+
+# [[bench]]
+# name = "scheduling_analysis"
+# harness = false
