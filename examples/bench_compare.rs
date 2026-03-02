@@ -25,6 +25,10 @@ struct Args {
     /// duration, NOT task periods.
     #[arg(long, default_value_t = 1.0)]
     scale: f64,
+
+    /// Naive backend poll interval in nanoseconds (default: 10_000_000 = 10ms).
+    #[arg(long, default_value_t = 10_000_000)]
+    naive_poll_ns: u64,
 }
 
 // ── Spec types ───────────────────────────────────────────────────────────────
@@ -230,6 +234,7 @@ impl SchedulerBackend for SyncopateBackend {
 
 struct NaivePollingBackend {
     poll_interval: Duration,
+    name: String,
 }
 
 struct NaiveTaskState {
@@ -275,9 +280,37 @@ impl NaivePollingBackend {
     }
 }
 
+fn format_duration_short(d: Duration) -> String {
+    let ns = d.as_nanos();
+    if ns < 1_000 {
+        format!("{}ns", ns)
+    } else if ns < 1_000_000 {
+        let us = ns as f64 / 1_000.0;
+        if us.fract() == 0.0 {
+            format!("{}µs", us as u64)
+        } else {
+            format!("{:.1}µs", us)
+        }
+    } else if ns < 1_000_000_000 {
+        let ms = ns as f64 / 1_000_000.0;
+        if ms.fract() == 0.0 {
+            format!("{}ms", ms as u64)
+        } else {
+            format!("{:.1}ms", ms)
+        }
+    } else {
+        let s = ns as f64 / 1_000_000_000.0;
+        if s.fract() == 0.0 {
+            format!("{}s", s as u64)
+        } else {
+            format!("{:.1}s", s)
+        }
+    }
+}
+
 impl SchedulerBackend for NaivePollingBackend {
     fn name(&self) -> &str {
-        "naive (10ms)"
+        &self.name
     }
 
     fn run(&self, scenario: &Scenario) -> ScenarioResult {
@@ -529,8 +562,10 @@ fn main() {
     let scenarios = build_scenarios(args.scale);
     let backends: Vec<Box<dyn SchedulerBackend>> = vec![
         Box::new(SyncopateBackend),
-        Box::new(NaivePollingBackend {
-            poll_interval: Duration::from_millis(10),
+        Box::new({
+            let poll_interval = Duration::from_nanos(args.naive_poll_ns);
+            let name = format!("naive ({})", format_duration_short(poll_interval));
+            NaivePollingBackend { poll_interval, name }
         }),
     ];
 
