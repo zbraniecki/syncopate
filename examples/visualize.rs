@@ -1,7 +1,7 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use syncopate::scheduler::Scheduler;
 use syncopate::system_time::SimClock;
 use syncopate::task::{TaskBuilder, Window};
@@ -68,6 +68,18 @@ struct Args {
     /// Wall-clock start offset (e.g. 3s means the scheduler starts at 00:03)
     #[arg(long, value_name = "DUR")]
     start: Option<String>,
+
+    /// Execution mode: sim (deterministic simulation) or real (actual tokio sleep)
+    #[arg(long, default_value = "sim")]
+    mode: Mode,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum Mode {
+    /// Deterministic simulation with SimClock
+    Sim,
+    /// Real execution with tokio::time::sleep
+    Real,
 }
 
 // ── Duration parsing ─────────────────────────────────────────────────────────
@@ -495,6 +507,90 @@ fn simulate(scenario: &Scenario) -> Vec<SimEvent> {
     events
 }
 
+async fn simulate_real(scenario: &Scenario) -> Vec<SimEvent> {
+    let mut scheduler = Scheduler::new();
+
+    // Track which tasks have been added (deferred by their delay).
+    let mut pending_tasks: Vec<(u64, &ScenarioTask)> = scenario
+        .tasks
+        .iter()
+        .map(|st| (st.delay.as_nanos() as u64, st))
+        .collect();
+    pending_tasks.sort_by_key(|(delay, _)| *delay);
+
+    // Add tasks with zero delay immediately.
+    while pending_tasks.first().is_some_and(|(d, _)| *d == 0) {
+        let (_, st) = pending_tasks.remove(0);
+        add_scenario_task(&mut scheduler, st);
+    }
+
+    let duration = scenario.duration();
+    let duration_nanos = duration.as_nanos() as u64;
+
+    let mut events = Vec::new();
+    let start = tokio::time::Instant::now();
+
+    // Tick at t=0 to handle Immediate tasks that fire right away.
+    record_tick(&scheduler.tick(), 0, &mut events);
+
+    let mut disruptions: Vec<&Disruption> = scenario.disruptions.iter().collect();
+    disruptions.sort_by_key(|d| d.at.as_nanos());
+
+    // Track which disruptions have already been applied.
+    let mut next_disruption = 0usize;
+
+    loop {
+        let elapsed_nanos = start.elapsed().as_nanos() as u64;
+        if elapsed_nanos >= duration_nanos {
+            break;
+        }
+
+        // Check if we've reached a disruption point (block for its duration).
+        if next_disruption < disruptions.len() {
+            let d = disruptions[next_disruption];
+            let d_at_nanos = d.at.as_nanos() as u64;
+            if elapsed_nanos >= d_at_nanos {
+                next_disruption += 1;
+                let block_dur = d.duration;
+                tokio::time::sleep(block_dur).await;
+                // After the disruption, tick to let the scheduler see the time jump.
+                let at = start.elapsed().as_nanos() as u64;
+                record_tick(&scheduler.tick(), at, &mut events);
+                continue;
+            }
+        }
+
+        // Add any pending tasks whose delay has been reached.
+        while let Some(&(delay, _)) = pending_tasks.first() {
+            if delay <= elapsed_nanos {
+                let (_, st) = pending_tasks.remove(0);
+                add_scenario_task(&mut scheduler, st);
+                let at = start.elapsed().as_nanos() as u64;
+                record_tick(&scheduler.tick(), at, &mut events);
+            } else {
+                break;
+            }
+        }
+
+        // Sleep until the next tick deadline.
+        if let Some(sleep_dur) = scheduler.calculate_next_tick() {
+            // Cap sleep so we don't overshoot the scenario duration.
+            let remaining = Duration::from_nanos(duration_nanos - elapsed_nanos);
+            let capped = sleep_dur.min(remaining);
+            tokio::time::sleep(capped).await;
+        } else {
+            // No tasks scheduled; sleep a small amount and retry.
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            continue;
+        }
+
+        let at = start.elapsed().as_nanos() as u64;
+        record_tick(&scheduler.tick(), at, &mut events);
+    }
+
+    events
+}
+
 fn record_tick(result: &syncopate::TickResult<'_>, at_nanos: u64, events: &mut Vec<SimEvent>) {
     for exec in &result.fired {
         let name = exec.task.name.as_deref().unwrap_or("?");
@@ -746,17 +842,13 @@ fn print_ruler(label_width: usize, cols: usize, res_nanos: u64, duration_nanos: 
     println!("{}", String::from_utf8_lossy(&tick_line));
 }
 
-/// Format a wall-clock duration as MM:SS (or HH:MM:SS if >= 1 hour).
+/// Format a wall-clock duration as HH:MM:SS.
 fn fmt_wall_clock(d: Duration) -> String {
     let total_secs = d.as_secs();
     let hours = total_secs / 3600;
     let mins = (total_secs % 3600) / 60;
     let secs = total_secs % 60;
-    if hours > 0 {
-        format!("{:02}:{:02}:{:02}", hours, mins, secs)
-    } else {
-        format!("{:02}:{:02}", mins, secs)
-    }
+    format!("{:02}:{:02}:{:02}", hours, mins, secs)
 }
 
 fn print_clock_ruler(
@@ -882,10 +974,11 @@ fn has_ideal_deadline(
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = Args::parse();
 
-    let scenario = if args.tasks.is_empty() {
+    let mut scenario = if args.tasks.is_empty() {
         // Use preset scenario, optionally with CLI disruption overrides.
         let mut s = get_preset(&args.scenario);
         if !args.disruptions.is_empty() {
@@ -943,7 +1036,22 @@ fn main() {
         std::process::exit(1);
     }
 
-    let events = simulate(&scenario);
+    // In real mode, default wall_clock_offset to the current time-of-day
+    // (unless explicitly set via --start).
+    if matches!(args.mode, Mode::Real) && args.start.is_none() {
+        let now = jiff::Zoned::now();
+        let h = now.hour() as u64;
+        let m = now.minute() as u64;
+        let s = now.second() as u64;
+        let ns = now.subsec_nanosecond() as u64;
+        scenario.wall_clock_offset =
+            Duration::from_secs(h * 3600 + m * 60 + s) + Duration::from_nanos(ns);
+    }
+
+    let events = match args.mode {
+        Mode::Sim => simulate(&scenario),
+        Mode::Real => simulate_real(&scenario).await,
+    };
     render(&scenario, &events);
 }
 
