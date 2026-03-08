@@ -838,15 +838,14 @@ fn task_label(task: &ScenarioTask) -> String {
     }
 }
 
-const TIMELINE_WIDTH: usize = 120;
-
 fn render(scenario: &Scenario, result: &SimResult) {
     let events = &result.events;
     let tick_times = &result.tick_times;
     let duration = scenario.duration();
     let duration_nanos = duration.as_nanos() as u64;
-    let res_nanos = ((duration_nanos as f64) / (TIMELINE_WIDTH as f64)).ceil() as u64;
-    let res_nanos = res_nanos.max(1);
+    let ruler_interval = pick_ruler_interval(duration_nanos);
+    // Snap resolution so each ruler interval spans exactly 20 columns.
+    let res_nanos = (ruler_interval / 20).max(1);
     let cols = (duration_nanos / res_nanos) as usize;
 
     // Find widest label for padding.
