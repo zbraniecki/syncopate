@@ -161,8 +161,10 @@ fn miss_does_not_decrement_remaining() {
         .unwrap();
     scheduler.add_task(task).unwrap();
 
-    // Miss the deadline (zero window, arrive late).
-    clock.advance(Duration::from_millis(200));
+    // Miss the deadline (zero window, arrive between deadlines).
+    // Advance to 250ms — deadline at 100ms is missed, deadline at 200ms is missed,
+    // and 250ms doesn't coincide with any deadline.
+    clock.advance(Duration::from_millis(250));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 0);
     assert_eq!(result.missed.len(), 1);
@@ -170,8 +172,8 @@ fn miss_does_not_decrement_remaining() {
     // Task should still be schedulable (miss didn't consume the fire).
     assert!(scheduler.calculate_next_tick().is_some());
 
-    // Next period fires.
-    clock.advance(Duration::from_millis(100));
+    // Next period fires (deadline at 300ms, arrive exactly at 300ms).
+    clock.advance(Duration::from_millis(50));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
 

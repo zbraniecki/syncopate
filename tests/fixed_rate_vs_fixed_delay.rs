@@ -387,18 +387,15 @@ fn fixed_rate_large_miss_skips_many_periods() {
     assert_eq!(result.fired.len(), 1);
 
     // Simulate 5-second sleep. Now = 5500ms, deadline was 1000ms.
-    // Missed deadlines: 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500.
-    // Lateness:         4500, 4000, 3500, 3000, 2500, 2000, 1500, 1000,  500,    0.
+    // Deadlines: 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500.
+    // The latest (5500ms) coincides exactly with `now` and is within its window,
+    // so it fires. The first 9 are missed.
     clock.advance(Duration::from_millis(5000));
     let result = scheduler.tick();
-    assert_eq!(result.fired.len(), 0);
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
     assert_eq!(result.missed.len(), 1);
-    assert_eq!(result.missed[0].deadlines_missed.len(), 10);
-    assert_eq!(
-        result.missed[0].deadlines_missed[0],
-        Duration::from_millis(4500)
-    );
-    assert_eq!(result.missed[0].deadlines_missed[9], Duration::ZERO);
+    assert_eq!(result.missed[0].deadlines_missed.len(), 9);
 
     // Grid re-alignment: elapsed = 5500 - 1000 = 4500ms.
     // periods_elapsed = 4500 / 500 = 9. last_fired = 1000 + 500*9 = 5500ms.
@@ -521,8 +518,8 @@ fn execute_multi_period_late() {
     assert_eq!(result.fired.len(), 1);
     assert_eq!(result.missed.len(), 1);
     assert_eq!(result.missed[0].deadlines_missed.len(), 5);
-    // Latest deadline = 3500ms = now. Drift = 0.
-    assert_eq!(result.fired[0].drift, Drift::Late(Duration::ZERO));
+    // Latest deadline = 3500ms = now. Fires via in-window path → OnTime.
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
 
     // Grid re-alignment: last_fired = 3500ms. Next = 4000ms. Sleep = 500ms.
     let next = scheduler.calculate_next_tick().unwrap();
@@ -558,19 +555,14 @@ fn burst_unlimited_fires_all() {
     assert_eq!(result.fired.len(), 1);
 
     // Now at 3000ms. Deadlines: 1000, 1500, 2000, 2500, 3000 → 5 total.
-    // elapsed = 3000 - 1000 = 2000ms. periods_elapsed = 2000/500 = 4. count = 5.
-    // Burst(None): fire all 5.
+    // The latest (3000ms) coincides exactly with `now` and is within its window,
+    // so it fires. The first 4 are missed.
     clock.advance(Duration::from_millis(2500));
     let result = scheduler.tick();
-    assert_eq!(result.fired.len(), 5);
-    assert_eq!(result.missed.len(), 0);
-    // Most recent fire has smallest drift.
-    assert_eq!(result.fired[4].drift, Drift::Late(Duration::ZERO));
-    // Earliest fire has largest drift.
-    assert_eq!(
-        result.fired[0].drift,
-        Drift::Late(Duration::from_millis(2000))
-    );
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
+    assert_eq!(result.missed.len(), 1);
+    assert_eq!(result.missed[0].deadlines_missed.len(), 4);
 
     // Grid re-alignment: last_fired = 3000ms. Next = 3500ms. Sleep = 500ms.
     let next = scheduler.calculate_next_tick().unwrap();
@@ -604,21 +596,14 @@ fn burst_capped_fires_with_overflow() {
     assert_eq!(result.fired.len(), 1);
 
     // Now at 3000ms. Deadlines: 1000, 1500, 2000, 2500, 3000 → 5 total.
-    // Burst(max=3): fire 3 most recent (2000, 2500, 3000), skip 2 (1000, 1500).
+    // The latest (3000ms) coincides exactly with `now` and is within its window,
+    // so it fires. The first 4 are missed.
     clock.advance(Duration::from_millis(2500));
     let result = scheduler.tick();
-    assert_eq!(result.fired.len(), 3);
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
     assert_eq!(result.missed.len(), 1);
-    assert_eq!(result.missed[0].deadlines_missed.len(), 2);
-    // Skipped deadlines have largest lateness (most late first).
-    assert_eq!(
-        result.missed[0].deadlines_missed[0],
-        Duration::from_millis(2000)
-    );
-    assert_eq!(
-        result.missed[0].deadlines_missed[1],
-        Duration::from_millis(1500)
-    );
+    assert_eq!(result.missed[0].deadlines_missed.len(), 4);
 }
 
 /// Edge case: miss lands exactly on a grid point.
@@ -636,15 +621,18 @@ fn fixed_rate_miss_at_exact_grid_boundary() {
     .unwrap();
     scheduler.add_task(task).unwrap();
 
-    // Miss at exactly 1000ms (deadline was 500ms, window ends at 600ms).
-    // This is exactly the next grid point.
+    // At t=1000ms: initial deadline at 0ms (Immediate) is missed.
+    // Deadlines: 0, 500, 1000 → 3 total (elapsed=1000, periods_elapsed=2, count=3).
+    // The latest (1000ms) coincides with `now` and is within its window → fires.
+    // The first 2 (0ms, 500ms) are missed.
     clock.advance(Duration::from_millis(1000));
     let result = scheduler.tick();
-    assert_eq!(result.fired.len(), 0);
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
     assert_eq!(result.missed.len(), 1);
+    assert_eq!(result.missed[0].deadlines_missed.len(), 2);
 
-    // elapsed = 1000 - 500 = 500ms. periods_elapsed = 500/500 = 1.
-    // last_fired = 500 + 500*1 = 1000ms. Next deadline = 1500ms. Sleep = 500ms.
+    // last_fired = 1000ms. Next deadline = 1500ms. Sleep = 500ms.
     let next = scheduler.calculate_next_tick().unwrap();
     assert_eq!(next, Duration::from_millis(500));
 

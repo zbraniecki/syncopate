@@ -56,6 +56,10 @@ EXAMPLES:
   visualize --task name=rel,period=200ms,window=50ms \\
             --task name=anch,period=1s,type=anchored,window=50ms
 
+  # Resolution cap: 100ms task with 500ms min tick interval
+  visualize --task name=fast,period=100ms,window=10ms \\
+            --min-tick-interval 500ms
+
   # Microsecond-scale tasks
   visualize --task name=hi,period=100us,window=10us \\
             --task name=lo,period=500us \\
@@ -80,6 +84,10 @@ struct Args {
     /// Wall-clock start time in HH:mm:ss or HH:mm:ss.zzz format (e.g. 14:30:00, 09:15:30.500)
     #[arg(long, value_name = "TIME")]
     start: Option<String>,
+
+    /// Minimum tick interval (resolution cap). Format: duration (e.g. 500ms)
+    #[arg(long, value_name = "DUR")]
+    min_tick_interval: Option<String>,
 
     /// Execution mode: sim (deterministic simulation) or real (actual tokio sleep)
     #[arg(long, default_value = "sim")]
@@ -213,6 +221,7 @@ struct Scenario {
     disruptions: Vec<Disruption>,
     duration_override: Option<Duration>,
     wall_clock_offset: Duration,
+    min_tick_interval: Option<Duration>,
 }
 
 enum ScenarioTaskKind {
@@ -430,6 +439,7 @@ fn get_preset(name: &str) -> Scenario {
             }],
             duration_override: None,
             wall_clock_offset: Duration::ZERO,
+            min_tick_interval: None,
         },
         "burst" => Scenario {
             name: "burst".into(),
@@ -465,6 +475,7 @@ fn get_preset(name: &str) -> Scenario {
             }],
             duration_override: None,
             wall_clock_offset: Duration::ZERO,
+            min_tick_interval: None,
         },
         "multi" => Scenario {
             name: "multi".into(),
@@ -516,6 +527,7 @@ fn get_preset(name: &str) -> Scenario {
             ],
             duration_override: None,
             wall_clock_offset: Duration::ZERO,
+            min_tick_interval: None,
         },
         other => {
             eprintln!("Unknown scenario '{other}'. Available: basic, burst, multi");
@@ -537,7 +549,12 @@ enum EventKind {
     Missed,
 }
 
-fn simulate(scenario: &Scenario) -> Vec<SimEvent> {
+struct SimResult {
+    events: Vec<SimEvent>,
+    tick_times: Vec<u64>,
+}
+
+fn simulate(scenario: &Scenario) -> SimResult {
     let clock = Rc::new(SimClock::new());
     // Set the wall clock to the scenario's wall_clock_offset so anchored tasks
     // fire at the correct wall-clock boundaries.
@@ -545,6 +562,9 @@ fn simulate(scenario: &Scenario) -> Vec<SimEvent> {
         clock.jump_wall_clock(scenario.wall_clock_offset.as_nanos() as i64);
     }
     let mut scheduler = Scheduler::new_with_clock(Rc::clone(&clock));
+    if let Some(interval) = scenario.min_tick_interval {
+        scheduler.set_min_tick_interval(Some(interval));
+    }
 
     // Track which tasks have been added (deferred by their delay).
     let mut pending_tasks: Vec<(u64, &ScenarioTask)> = scenario
@@ -563,69 +583,105 @@ fn simulate(scenario: &Scenario) -> Vec<SimEvent> {
     let duration = scenario.duration();
     let duration_nanos = duration.as_nanos() as u64;
 
-    // Simulation step: 1/1000th of the smallest period, clamped to [1ns, 1ms].
-    let min_period_nanos = scenario
-        .tasks
-        .iter()
-        .map(|t| t.period.as_nanos() as u64)
-        .min()
-        .unwrap_or(1_000_000);
-    let step_nanos = (min_period_nanos / 1000).clamp(1, 1_000_000);
-
     let mut events = Vec::new();
+    let mut tick_times = Vec::new();
     let mut current_nanos: u64 = 0;
 
     // Tick at t=0 to handle Immediate tasks that fire right away.
+    tick_times.push(current_nanos);
     record_tick(&scheduler.tick(), current_nanos, &mut events);
 
     let mut disruptions: Vec<&Disruption> = scenario.disruptions.iter().collect();
     disruptions.sort_by_key(|d| d.at.as_nanos());
 
-    while current_nanos < duration_nanos {
-        // Compute this step's target time.
-        let step_target = if let Some(d) = disruptions
-            .iter()
-            .find(|d| d.at.as_nanos() as u64 == current_nanos)
-        {
-            current_nanos + d.duration.as_nanos() as u64
-        } else {
-            current_nanos + step_nanos
-        };
+    let mut next_disruption = 0usize;
 
-        // Before advancing, add any pending tasks whose delay falls at or
-        // before step_target. Advance the clock to exactly each delay point
-        // so the scheduler records the correct anchor time.
+    while current_nanos < duration_nanos {
+        // Check if we've reached a disruption point (jump past its duration).
+        if next_disruption < disruptions.len() {
+            let d = disruptions[next_disruption];
+            let d_at_nanos = d.at.as_nanos() as u64;
+            if current_nanos >= d_at_nanos {
+                next_disruption += 1;
+                let jump = d.duration.as_nanos() as u64;
+                clock.advance(Duration::from_nanos(jump));
+                current_nanos += jump;
+                // Tick after the disruption so the scheduler sees the time jump.
+                tick_times.push(current_nanos);
+                record_tick(&scheduler.tick(), current_nanos, &mut events);
+                continue;
+            }
+        }
+
+        // Add any pending tasks whose delay has been reached.
         while let Some(&(delay, _)) = pending_tasks.first() {
-            if delay <= step_target {
-                if delay > current_nanos {
-                    clock.advance(Duration::from_nanos(delay - current_nanos));
-                    current_nanos = delay;
-                }
+            if delay <= current_nanos {
                 let (_, st) = pending_tasks.remove(0);
                 add_scenario_task(&mut scheduler, st);
                 // Tick immediately so Immediate tasks fire at their delay point.
-                let result = scheduler.tick();
-                record_tick(&result, current_nanos, &mut events);
+                tick_times.push(current_nanos);
+                record_tick(&scheduler.tick(), current_nanos, &mut events);
             } else {
                 break;
             }
         }
 
-        // Advance the clock to the step target.
-        if step_target > current_nanos {
-            clock.advance(Duration::from_nanos(step_target - current_nanos));
-            current_nanos = step_target;
+        // Use calculate_next_tick() to determine when to advance.
+        let sleep_dur = match scheduler.calculate_next_tick() {
+            Some(d) => d,
+            None => {
+                // No tasks scheduled yet. If there are pending tasks, advance
+                // to the earliest one's delay; otherwise we're done.
+                if let Some(&(delay, _)) = pending_tasks.first() {
+                    let step = delay.saturating_sub(current_nanos).max(1);
+                    clock.advance(Duration::from_nanos(step));
+                    current_nanos += step;
+                    continue;
+                }
+                break;
+            }
+        };
+
+        // Cap to remaining duration.
+        let remaining = duration_nanos - current_nanos;
+        let advance = (sleep_dur.as_nanos() as u64).min(remaining);
+        if advance == 0 {
+            // Already at a tick point but calculate_next_tick returned 0;
+            // advance by at least 1ns to avoid infinite loop.
+            clock.advance(Duration::from_nanos(1));
+            current_nanos += 1;
+        } else {
+            // Check if a pending task or disruption needs to fire before advance target.
+            let mut target = current_nanos + advance;
+            if let Some(&(delay, _)) = pending_tasks.first() {
+                if delay < target && delay > current_nanos {
+                    target = delay;
+                }
+            }
+            if next_disruption < disruptions.len() {
+                let d_at = disruptions[next_disruption].at.as_nanos() as u64;
+                if d_at < target && d_at > current_nanos {
+                    target = d_at;
+                }
+            }
+            let step = target - current_nanos;
+            clock.advance(Duration::from_nanos(step));
+            current_nanos = target;
         }
 
+        tick_times.push(current_nanos);
         let result = scheduler.tick();
         record_tick(&result, current_nanos, &mut events);
     }
 
-    events
+    SimResult { events, tick_times }
 }
 
-async fn simulate_real(scenario: &Scenario) -> Vec<SimEvent> {
+async fn simulate_real(scenario: &Scenario) -> SimResult {
     let mut scheduler = Scheduler::new();
+    if let Some(interval) = scenario.min_tick_interval {
+        scheduler.set_min_tick_interval(Some(interval));
+    }
 
     // Track which tasks have been added (deferred by their delay).
     let mut pending_tasks: Vec<(u64, &ScenarioTask)> = scenario
@@ -645,9 +701,11 @@ async fn simulate_real(scenario: &Scenario) -> Vec<SimEvent> {
     let duration_nanos = duration.as_nanos() as u64;
 
     let mut events = Vec::new();
+    let mut tick_times = Vec::new();
     let start = tokio::time::Instant::now();
 
     // Tick at t=0 to handle Immediate tasks that fire right away.
+    tick_times.push(0);
     record_tick(&scheduler.tick(), 0, &mut events);
 
     let mut disruptions: Vec<&Disruption> = scenario.disruptions.iter().collect();
@@ -672,6 +730,7 @@ async fn simulate_real(scenario: &Scenario) -> Vec<SimEvent> {
                 tokio::time::sleep(block_dur).await;
                 // After the disruption, tick to let the scheduler see the time jump.
                 let at = start.elapsed().as_nanos() as u64;
+                tick_times.push(at);
                 record_tick(&scheduler.tick(), at, &mut events);
                 continue;
             }
@@ -683,6 +742,7 @@ async fn simulate_real(scenario: &Scenario) -> Vec<SimEvent> {
                 let (_, st) = pending_tasks.remove(0);
                 add_scenario_task(&mut scheduler, st);
                 let at = start.elapsed().as_nanos() as u64;
+                tick_times.push(at);
                 record_tick(&scheduler.tick(), at, &mut events);
             } else {
                 break;
@@ -702,10 +762,11 @@ async fn simulate_real(scenario: &Scenario) -> Vec<SimEvent> {
         }
 
         let at = start.elapsed().as_nanos() as u64;
+        tick_times.push(at);
         record_tick(&scheduler.tick(), at, &mut events);
     }
 
-    events
+    SimResult { events, tick_times }
 }
 
 fn record_tick(result: &syncopate::TickResult<'_>, at_nanos: u64, events: &mut Vec<SimEvent>) {
@@ -719,11 +780,15 @@ fn record_tick(result: &syncopate::TickResult<'_>, at_nanos: u64, events: &mut V
     }
     for miss in &result.missed {
         let name = miss.task.name.as_deref().unwrap_or("?");
-        events.push(SimEvent {
-            at_nanos,
-            task_name: name.to_string(),
-            kind: EventKind::Missed,
-        });
+        // Place each missed event at its actual deadline time (tick time - lateness).
+        for lateness in &miss.deadlines_missed {
+            let deadline_nanos = at_nanos.saturating_sub(lateness.as_nanos() as u64);
+            events.push(SimEvent {
+                at_nanos: deadline_nanos,
+                task_name: name.to_string(),
+                kind: EventKind::Missed,
+            });
+        }
     }
 }
 
@@ -775,7 +840,9 @@ fn task_label(task: &ScenarioTask) -> String {
 
 const TIMELINE_WIDTH: usize = 120;
 
-fn render(scenario: &Scenario, events: &[SimEvent]) {
+fn render(scenario: &Scenario, result: &SimResult) {
+    let events = &result.events;
+    let tick_times = &result.tick_times;
     let duration = scenario.duration();
     let duration_nanos = duration.as_nanos() as u64;
     let res_nanos = ((duration_nanos as f64) / (TIMELINE_WIDTH as f64)).ceil() as u64;
@@ -803,11 +870,20 @@ fn render(scenario: &Scenario, events: &[SimEvent]) {
 
     println!();
     println!("Scenario: {} — {}", scenario.name, scenario.description);
-    println!(
-        "Duration: {}, Resolution: {}/col",
-        fmt_duration(duration),
-        fmt_duration(Duration::from_nanos(res_nanos))
-    );
+    if let Some(min_tick) = scenario.min_tick_interval {
+        println!(
+            "Duration: {}, Resolution: {}/col, Min tick interval: {}",
+            fmt_duration(duration),
+            fmt_duration(Duration::from_nanos(res_nanos)),
+            fmt_duration(min_tick),
+        );
+    } else {
+        println!(
+            "Duration: {}, Resolution: {}/col",
+            fmt_duration(duration),
+            fmt_duration(Duration::from_nanos(res_nanos))
+        );
+    }
     println!();
 
     // Time ruler.
@@ -845,12 +921,22 @@ fn render(scenario: &Scenario, events: &[SimEvent]) {
         for col in 0..=cols {
             let col_start = col as u64 * res_nanos;
             let col_end = col_start + res_nanos;
-            let any = scenario
+            let has_ideal = scenario
                 .tasks
                 .iter()
                 .any(|t| has_ideal_deadline_for_task(t, scenario.wall_clock_offset, col_start, col_end));
-            if any {
+            let has_actual_tick = tick_times
+                .iter()
+                .any(|&t| t >= col_start && t < col_end);
+            if has_ideal && has_actual_tick {
+                // Ideal deadline with an actual tick — normal cyan
                 print!("\x1b[36m\u{2193}\x1b[0m");
+            } else if has_ideal {
+                // Ideal deadline but no tick (skipped due to min_tick_interval) — gray
+                print!("\x1b[90m\u{2193}\x1b[0m");
+            } else if has_actual_tick {
+                // Actual tick at a non-ideal time — cyan dot
+                print!("\x1b[36m\u{00b7}\x1b[0m");
             } else {
                 print!("\u{00b7}");
             }
@@ -925,6 +1011,7 @@ fn render(scenario: &Scenario, events: &[SimEvent]) {
     println!("Legend:");
     println!(
         "  \x1b[36m\u{2193}\x1b[0m  ideal deadline    \
+         \x1b[90m\u{2193}\x1b[0m  skipped (resolution cap)    \
          \x1b[32m\u{2713}\x1b[0m  task fired    \
          \x1b[31m\u{2717}\x1b[0m  missed deadline    \
          \x1b[31m~\x1b[0m  disruption (delay)    \
@@ -1198,8 +1285,14 @@ async fn main() {
                 .as_ref()
                 .map(|s| parse_wall_clock(s).unwrap_or_else(|e| die(&e)))
                 .unwrap_or(Duration::ZERO),
+            min_tick_interval: None,
         }
     };
+
+    if let Some(ref interval_str) = args.min_tick_interval {
+        scenario.min_tick_interval =
+            Some(parse_duration(interval_str).unwrap_or_else(|e| die(&e)));
+    }
 
     if scenario.tasks.is_empty() {
         eprintln!("Error: no tasks defined");
@@ -1218,11 +1311,11 @@ async fn main() {
             Duration::from_secs(h * 3600 + m * 60 + s) + Duration::from_nanos(ns);
     }
 
-    let events = match args.mode {
+    let result = match args.mode {
         Mode::Sim => simulate(&scenario),
         Mode::Real => simulate_real(&scenario).await,
     };
-    render(&scenario, &events);
+    render(&scenario, &result);
 }
 
 fn die(msg: &str) -> ! {
