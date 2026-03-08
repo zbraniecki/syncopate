@@ -64,6 +64,10 @@ struct Args {
     /// Override scenario duration (auto-computed as 10x longest period if omitted)
     #[arg(long, value_name = "DUR")]
     duration: Option<String>,
+
+    /// Wall-clock start offset (e.g. 3s means the scheduler starts at 00:03)
+    #[arg(long, value_name = "DUR")]
+    start: Option<String>,
 }
 
 // ── Duration parsing ─────────────────────────────────────────────────────────
@@ -139,6 +143,7 @@ struct Scenario {
     tasks: Vec<ScenarioTask>,
     disruptions: Vec<Disruption>,
     duration_override: Option<Duration>,
+    wall_clock_offset: Duration,
 }
 
 struct ScenarioTask {
@@ -310,6 +315,7 @@ fn get_preset(name: &str) -> Scenario {
                 duration: Duration::from_millis(350),
             }],
             duration_override: None,
+            wall_clock_offset: Duration::ZERO,
         },
         "burst" => Scenario {
             name: "burst".into(),
@@ -340,6 +346,7 @@ fn get_preset(name: &str) -> Scenario {
                 duration: Duration::from_millis(350),
             }],
             duration_override: None,
+            wall_clock_offset: Duration::ZERO,
         },
         "multi" => Scenario {
             name: "multi".into(),
@@ -384,6 +391,7 @@ fn get_preset(name: &str) -> Scenario {
                 },
             ],
             duration_override: None,
+            wall_clock_offset: Duration::ZERO,
         },
         other => {
             eprintln!("Unknown scenario '{other}'. Available: basic, burst, multi");
@@ -575,6 +583,15 @@ fn render(scenario: &Scenario, events: &[SimEvent]) {
     // Time ruler.
     print_ruler(label_width, cols, res_nanos, duration_nanos);
 
+    // Wall-clock ruler.
+    print_clock_ruler(
+        label_width,
+        cols,
+        res_nanos,
+        duration_nanos,
+        scenario.wall_clock_offset,
+    );
+
     // Per-task ideal rows.
     for task in &scenario.tasks {
         let label = task_label(task);
@@ -729,6 +746,68 @@ fn print_ruler(label_width: usize, cols: usize, res_nanos: u64, duration_nanos: 
     println!("{}", String::from_utf8_lossy(&tick_line));
 }
 
+/// Format a wall-clock duration as MM:SS (or HH:MM:SS if >= 1 hour).
+fn fmt_wall_clock(d: Duration) -> String {
+    let total_secs = d.as_secs();
+    let hours = total_secs / 3600;
+    let mins = (total_secs % 3600) / 60;
+    let secs = total_secs % 60;
+    if hours > 0 {
+        format!("{:02}:{:02}:{:02}", hours, mins, secs)
+    } else {
+        format!("{:02}:{:02}", mins, secs)
+    }
+}
+
+fn print_clock_ruler(
+    label_width: usize,
+    cols: usize,
+    res_nanos: u64,
+    duration_nanos: u64,
+    wall_clock_offset: Duration,
+) {
+    let offset_nanos = wall_clock_offset.as_nanos() as u64;
+    let end_nanos = offset_nanos + duration_nanos;
+
+    // Pick a ruler interval based on the wall-clock span, same logic as Time.
+    let ruler_interval = pick_ruler_interval(duration_nanos);
+
+    // Find the first wall-clock tick that is a multiple of ruler_interval
+    // and falls at or after offset_nanos.
+    let first_tick = if offset_nanos % ruler_interval == 0 {
+        offset_nanos
+    } else {
+        (offset_nanos / ruler_interval + 1) * ruler_interval
+    };
+
+    let final_label = fmt_wall_clock(Duration::from_nanos(end_nanos));
+    let buf_len = cols + 1 + final_label.len();
+    let mut num_line = vec![b' '; buf_len];
+    let mut tick_line = vec![b' '; buf_len];
+
+    let mut wall_tick = first_tick;
+    while wall_tick <= end_nanos {
+        // Convert wall-clock nanos to column position (relative to offset).
+        let rel_nanos = wall_tick - offset_nanos;
+        let col = (rel_nanos / res_nanos) as usize;
+        if col <= cols {
+            tick_line[col] = b'|';
+            let label = fmt_wall_clock(Duration::from_nanos(wall_tick));
+            let label_bytes = label.as_bytes();
+            if col + label_bytes.len() <= buf_len {
+                num_line[col..col + label_bytes.len()].copy_from_slice(label_bytes);
+            }
+        }
+        wall_tick += ruler_interval;
+    }
+
+    print!("{:>width$}  ", "Clock", width = label_width);
+    println!("{}", String::from_utf8_lossy(&num_line));
+
+    print!("{:>width$}  ", "", width = label_width);
+    println!("{}", String::from_utf8_lossy(&tick_line));
+}
+
 fn pick_ruler_interval(duration_nanos: u64) -> u64 {
     // Candidates in descending order (nanos).
     let candidates: &[u64] = &[
@@ -819,6 +898,9 @@ fn main() {
         if let Some(ref dur_str) = args.duration {
             s.duration_override = Some(parse_duration(dur_str).unwrap_or_else(|e| die(&e)));
         }
+        if let Some(ref start_str) = args.start {
+            s.wall_clock_offset = parse_duration(start_str).unwrap_or_else(|e| die(&e));
+        }
         s
     } else {
         // Fully custom scenario from CLI.
@@ -848,6 +930,11 @@ fn main() {
                 .duration
                 .as_ref()
                 .map(|s| parse_duration(s).unwrap_or_else(|e| die(&e))),
+            wall_clock_offset: args
+                .start
+                .as_ref()
+                .map(|s| parse_duration(s).unwrap_or_else(|e| die(&e)))
+                .unwrap_or(Duration::ZERO),
         }
     };
 
