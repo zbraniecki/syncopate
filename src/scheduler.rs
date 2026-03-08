@@ -1,6 +1,6 @@
 use crate::system_time::{Clock, MonoInstant, RealClock, WallInstant};
-use crate::task::{PeriodicSchedule, Repeat, Task, TaskType};
 pub use crate::task::Drift;
+use crate::task::{MissedTickBehavior, PeriodicSchedule, Repeat, Task, TaskType};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -171,8 +171,10 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
                     period,
                     window,
                     schedule,
+                    on_miss,
                 } => {
-                    let (period, window, schedule) = (*period, *window, *schedule);
+                    let (period, window, schedule, on_miss) =
+                        (*period, *window, *schedule, *on_miss);
                     let anchor = task.last_fired.unwrap_or(self.started_at);
                     let next_deadline = anchor + period;
 
@@ -197,37 +199,101 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
                             task: &task.task,
                             drift,
                         });
+                    } else if schedule == PeriodicSchedule::FixedDelay {
+                        // FixedDelay always fires — window is informational only.
+                        task.last_fired = Some(now);
+                        if let Some(ref mut r) = task.remaining {
+                            *r = r.saturating_sub(1);
+                        }
+                        fired.push(TaskExecution {
+                            task: &task.task,
+                            drift: Drift::Late(now - next_deadline),
+                        });
                     } else {
+                        // FixedRate: branch on miss behavior.
                         let elapsed_ns = (now - next_deadline).as_nanos();
                         let period_ns = period.as_nanos();
                         let periods_elapsed = elapsed_ns / period_ns;
                         let count = periods_elapsed as u32 + 1;
-                        let deadlines_missed: Vec<Duration> = (0..count)
-                            .map(|i| {
-                                let deadline_offset = period_ns * i as u128;
-                                Duration::from_nanos((elapsed_ns - deadline_offset) as u64)
-                            })
-                            .collect();
 
-                        task.last_fired = Some(match schedule {
-                            PeriodicSchedule::FixedRate => {
-                                next_deadline + period * (periods_elapsed as u32)
+                        match on_miss {
+                            MissedTickBehavior::Execute => {
+                                if count > 1 {
+                                    let skipped: Vec<Duration> = (0..(count - 1))
+                                        .map(|i| {
+                                            let offset = period_ns * i as u128;
+                                            Duration::from_nanos((elapsed_ns - offset) as u64)
+                                        })
+                                        .collect();
+                                    missed.push(MissedExecution {
+                                        task: &task.task,
+                                        deadlines_missed: skipped,
+                                    });
+                                }
+                                let latest_deadline =
+                                    next_deadline + period * (periods_elapsed as u32);
+                                task.last_fired = Some(latest_deadline);
+                                if let Some(ref mut r) = task.remaining {
+                                    *r = r.saturating_sub(1);
+                                }
+                                fired.push(TaskExecution {
+                                    task: &task.task,
+                                    drift: Drift::Late(now - latest_deadline),
+                                });
                             }
-                            PeriodicSchedule::FixedDelay => now,
-                        });
-                        missed.push(MissedExecution {
-                            task: &task.task,
-                            deadlines_missed,
-                        });
+                            MissedTickBehavior::Burst { max } => {
+                                let fire_count = max.map_or(count, |m| count.min(m));
+                                let skip_count = count - fire_count;
+                                if skip_count > 0 {
+                                    let skipped: Vec<Duration> = (0..skip_count)
+                                        .map(|i| {
+                                            let offset = period_ns * i as u128;
+                                            Duration::from_nanos((elapsed_ns - offset) as u64)
+                                        })
+                                        .collect();
+                                    missed.push(MissedExecution {
+                                        task: &task.task,
+                                        deadlines_missed: skipped,
+                                    });
+                                }
+                                for i in skip_count..count {
+                                    let offset = period_ns * i as u128;
+                                    let lateness = elapsed_ns - offset;
+                                    fired.push(TaskExecution {
+                                        task: &task.task,
+                                        drift: Drift::Late(Duration::from_nanos(lateness as u64)),
+                                    });
+                                }
+                                task.last_fired = Some(next_deadline + period * (count - 1));
+                                if let Some(ref mut r) = task.remaining {
+                                    *r = r.saturating_sub(fire_count);
+                                }
+                            }
+                            MissedTickBehavior::Skip => {
+                                let deadlines_missed: Vec<Duration> = (0..count)
+                                    .map(|i| {
+                                        let offset = period_ns * i as u128;
+                                        Duration::from_nanos((elapsed_ns - offset) as u64)
+                                    })
+                                    .collect();
+                                task.last_fired =
+                                    Some(next_deadline + period * (periods_elapsed as u32));
+                                missed.push(MissedExecution {
+                                    task: &task.task,
+                                    deadlines_missed,
+                                });
+                            }
+                        }
                     }
                 }
                 TaskType::Anchored {
                     period,
                     offset,
                     window,
+                    on_miss,
                 } => {
-                    let (period, offset_dur, window) =
-                        (*period, offset.unwrap_or(Duration::ZERO), *window);
+                    let (period, offset_dur, window, on_miss) =
+                        (*period, offset.unwrap_or(Duration::ZERO), *window, *on_miss);
                     let wall_now = self.clock.wall_now();
 
                     let deadline = next_absolute_deadline(
@@ -271,22 +337,82 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
                         let period_ns = period.as_nanos() as u64;
                         let periods_elapsed = elapsed_ns / period_ns;
                         let count = periods_elapsed as u32 + 1;
-                        let deadlines_missed: Vec<Duration> = (0..count)
-                            .map(|i| {
-                                let deadline_offset = period_ns * i as u64;
-                                Duration::from_nanos(elapsed_ns - deadline_offset)
-                            })
-                            .collect();
 
-                        let last_missed = WallInstant(
-                            deadline.as_nanos() + period_ns * periods_elapsed,
-                        );
-                        task.last_wall_deadline = Some(last_missed);
-                        task.last_fired = Some(now);
-                        missed.push(MissedExecution {
-                            task: &task.task,
-                            deadlines_missed,
-                        });
+                        match on_miss {
+                            MissedTickBehavior::Execute => {
+                                if count > 1 {
+                                    let skipped: Vec<Duration> = (0..(count - 1))
+                                        .map(|i| {
+                                            let offset = period_ns * i as u64;
+                                            Duration::from_nanos(elapsed_ns - offset)
+                                        })
+                                        .collect();
+                                    missed.push(MissedExecution {
+                                        task: &task.task,
+                                        deadlines_missed: skipped,
+                                    });
+                                }
+                                let last_missed =
+                                    WallInstant(deadline.as_nanos() + period_ns * periods_elapsed);
+                                task.last_wall_deadline = Some(last_missed);
+                                task.last_fired = Some(now);
+                                if let Some(ref mut r) = task.remaining {
+                                    *r = r.saturating_sub(1);
+                                }
+                                let lateness = elapsed_ns - period_ns * periods_elapsed;
+                                fired.push(TaskExecution {
+                                    task: &task.task,
+                                    drift: Drift::Late(Duration::from_nanos(lateness)),
+                                });
+                            }
+                            MissedTickBehavior::Burst { max } => {
+                                let fire_count = max.map_or(count, |m| count.min(m));
+                                let skip_count = count - fire_count;
+                                if skip_count > 0 {
+                                    let skipped: Vec<Duration> = (0..skip_count)
+                                        .map(|i| {
+                                            let offset = period_ns * i as u64;
+                                            Duration::from_nanos(elapsed_ns - offset)
+                                        })
+                                        .collect();
+                                    missed.push(MissedExecution {
+                                        task: &task.task,
+                                        deadlines_missed: skipped,
+                                    });
+                                }
+                                for i in skip_count..count {
+                                    let offset = period_ns * i as u64;
+                                    let lateness = elapsed_ns - offset;
+                                    fired.push(TaskExecution {
+                                        task: &task.task,
+                                        drift: Drift::Late(Duration::from_nanos(lateness)),
+                                    });
+                                }
+                                let last_missed =
+                                    WallInstant(deadline.as_nanos() + period_ns * periods_elapsed);
+                                task.last_wall_deadline = Some(last_missed);
+                                task.last_fired = Some(now);
+                                if let Some(ref mut r) = task.remaining {
+                                    *r = r.saturating_sub(fire_count);
+                                }
+                            }
+                            MissedTickBehavior::Skip => {
+                                let deadlines_missed: Vec<Duration> = (0..count)
+                                    .map(|i| {
+                                        let offset = period_ns * i as u64;
+                                        Duration::from_nanos(elapsed_ns - offset)
+                                    })
+                                    .collect();
+                                let last_missed =
+                                    WallInstant(deadline.as_nanos() + period_ns * periods_elapsed);
+                                task.last_wall_deadline = Some(last_missed);
+                                task.last_fired = Some(now);
+                                missed.push(MissedExecution {
+                                    task: &task.task,
+                                    deadlines_missed,
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -344,4 +470,3 @@ fn floor_wall_deadline(
     let aligned = ((now_nanos - offset_nanos) / period_nanos) * period_nanos + offset_nanos;
     Some(WallInstant(aligned))
 }
-

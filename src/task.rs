@@ -58,17 +58,25 @@ fn fmt_duration(d: Duration, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Resul
 pub enum PeriodicSchedule {
     /// Period measured from ideal deadline to ideal deadline.
     /// Self-correcting: tick processing time doesn't affect cadence.
-    ///
-    /// On miss (beyond window): re-aligns to the periodic grid.
-    /// Equivalent to tokio's `MissedTickBehavior::Skip`.
     #[default]
     FixedRate,
     /// Period measured from actual fire time.
     /// Tick processing time extends the total cycle.
-    ///
-    /// On miss (beyond window): next period starts from `now`.
-    /// Equivalent to tokio's `MissedTickBehavior::Delay`.
     FixedDelay,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MissedTickBehavior {
+    /// Fire once for the latest deadline.
+    /// Earlier missed deadlines produce a MissedExecution.
+    /// Latest deadline produces a TaskExecution.
+    Execute,
+    /// Fire once per missed period (rapid catch-up).
+    /// `max: None` = unlimited, `Some(n)` = cap at n fires, overflow → MissedExecution.
+    Burst { max: Option<u32> },
+    /// Don't fire. Report all missed deadlines via MissedExecution.
+    #[default]
+    Skip,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,11 +117,13 @@ pub enum TaskType {
         period: Duration,
         window: Window,
         schedule: PeriodicSchedule,
+        on_miss: MissedTickBehavior,
     },
     Anchored {
         period: Duration,
         offset: Option<Duration>,
         window: Window,
+        on_miss: MissedTickBehavior,
     },
 }
 
@@ -133,7 +143,7 @@ pub struct Task<Ctx = ()> {
     pub priority: u8,
     pub name: Option<String>,
     pub on_execute: Option<TaskCallback<Ctx>>,
-    pub on_miss: Option<MissCallback<Ctx>>,
+    pub on_missed: Option<MissCallback<Ctx>>,
 }
 
 #[derive(Debug, Error)]
@@ -150,8 +160,9 @@ pub struct TaskBuilder<Ctx = ()> {
     priority: u8,
     name: Option<String>,
     on_execute: Option<TaskCallback<Ctx>>,
-    on_miss: Option<MissCallback<Ctx>>,
+    on_missed: Option<MissCallback<Ctx>>,
     schedule: PeriodicSchedule,
+    missed_tick_behavior: MissedTickBehavior,
 }
 
 impl<Ctx> TaskBuilder<Ctx> {
@@ -162,8 +173,9 @@ impl<Ctx> TaskBuilder<Ctx> {
             priority: 0,
             name: None,
             on_execute: None,
-            on_miss: None,
+            on_missed: None,
             schedule: PeriodicSchedule::default(),
+            missed_tick_behavior: MissedTickBehavior::default(),
         }
     }
 
@@ -174,6 +186,7 @@ impl<Ctx> TaskBuilder<Ctx> {
             period,
             window,
             schedule: PeriodicSchedule::default(),
+            on_miss: MissedTickBehavior::default(),
         })
     }
 
@@ -182,6 +195,7 @@ impl<Ctx> TaskBuilder<Ctx> {
             period: delay,
             window,
             schedule: PeriodicSchedule::default(),
+            on_miss: MissedTickBehavior::default(),
         });
         b.repeat = Repeat::Times(1);
         b
@@ -194,6 +208,7 @@ impl<Ctx> TaskBuilder<Ctx> {
             period,
             offset: None,
             window,
+            on_miss: MissedTickBehavior::default(),
         })
     }
 
@@ -202,6 +217,7 @@ impl<Ctx> TaskBuilder<Ctx> {
             period,
             offset: Some(offset),
             window,
+            on_miss: MissedTickBehavior::default(),
         })
     }
 
@@ -210,6 +226,7 @@ impl<Ctx> TaskBuilder<Ctx> {
             period,
             offset: None,
             window,
+            on_miss: MissedTickBehavior::default(),
         });
         b.repeat = Repeat::Times(1);
         b
@@ -220,6 +237,7 @@ impl<Ctx> TaskBuilder<Ctx> {
             period,
             offset: Some(offset),
             window,
+            on_miss: MissedTickBehavior::default(),
         });
         b.repeat = Repeat::Times(1);
         b
@@ -250,8 +268,13 @@ impl<Ctx> TaskBuilder<Ctx> {
         self
     }
 
-    pub fn on_miss(mut self, callback: MissCallback<Ctx>) -> Self {
-        self.on_miss = Some(callback);
+    pub fn on_missed(mut self, callback: MissCallback<Ctx>) -> Self {
+        self.on_missed = Some(callback);
+        self
+    }
+
+    pub fn on_miss(mut self, behavior: MissedTickBehavior) -> Self {
+        self.missed_tick_behavior = behavior;
         self
     }
 
@@ -263,9 +286,19 @@ impl<Ctx> TaskBuilder<Ctx> {
     pub fn build(self) -> Result<Task<Ctx>, TaskBuildError> {
         let mut task_type = self.task_type.ok_or(TaskBuildError::NoTaskType)?;
 
-        // Apply the builder's schedule to Relative tasks.
-        if let TaskType::Relative { schedule: s, .. } = &mut task_type {
-            *s = self.schedule;
+        // Apply the builder's schedule and miss behavior.
+        match &mut task_type {
+            TaskType::Relative {
+                schedule: s,
+                on_miss,
+                ..
+            } => {
+                *s = self.schedule;
+                *on_miss = self.missed_tick_behavior;
+            }
+            TaskType::Anchored { on_miss, .. } => {
+                *on_miss = self.missed_tick_behavior;
+            }
         }
 
         // Validate offset < period for Anchored tasks.
@@ -289,7 +322,7 @@ impl<Ctx> TaskBuilder<Ctx> {
             priority: self.priority,
             name: self.name,
             on_execute: self.on_execute,
-            on_miss: self.on_miss,
+            on_missed: self.on_missed,
         })
     }
 }

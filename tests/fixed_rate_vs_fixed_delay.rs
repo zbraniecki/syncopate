@@ -1,7 +1,7 @@
 use std::rc::Rc;
 use std::time::Duration;
 use syncopate::{
-    PeriodicSchedule, Window,
+    MissedTickBehavior, PeriodicSchedule, Window,
     scheduler::{Drift, Scheduler},
     system_time::SimClock,
     task::TaskBuilder,
@@ -294,9 +294,10 @@ fn fixed_rate_realigns_to_grid_after_miss() {
     assert_eq!(next, Duration::from_millis(200));
 }
 
-/// FixedDelay: after a miss, next period starts from `now` — no grid alignment.
+/// FixedDelay: always fires past window (window is informational only).
+/// Next period starts from `now` — no grid alignment.
 #[test]
-fn fixed_delay_does_not_realign_after_miss() {
+fn fixed_delay_always_fires_past_window() {
     let (clock, mut scheduler) = make_scheduler();
 
     let task = TaskBuilder::every(
@@ -309,11 +310,15 @@ fn fixed_delay_does_not_realign_after_miss() {
     .unwrap();
     scheduler.add_task(task).unwrap();
 
-    // Miss at 800ms.
+    // 800ms — past the 100ms late window, but FixedDelay always fires.
     clock.advance(Duration::from_millis(800));
     let result = scheduler.tick();
-    assert_eq!(result.fired.len(), 0);
-    assert_eq!(result.missed.len(), 1);
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.missed.len(), 0);
+    assert_eq!(
+        result.fired[0].drift,
+        Drift::Late(Duration::from_millis(300))
+    );
 
     // FixedDelay anchors to now: next deadline = 800 + 500 = 1300ms. Sleep = 500ms.
     let next = scheduler.calculate_next_tick().unwrap();
@@ -353,10 +358,7 @@ fn fixed_rate_large_miss_skips_many_periods() {
         result.missed[0].deadlines_missed[0],
         Duration::from_millis(4500)
     );
-    assert_eq!(
-        result.missed[0].deadlines_missed[9],
-        Duration::ZERO
-    );
+    assert_eq!(result.missed[0].deadlines_missed[9], Duration::ZERO);
 
     // Grid re-alignment: elapsed = 5500 - 1000 = 4500ms.
     // periods_elapsed = 4500 / 500 = 9. last_fired = 1000 + 500*9 = 5500ms.
@@ -408,6 +410,160 @@ fn fixed_rate_miss_then_recovery_preserves_grid_long_term() {
         assert_eq!(result.fired.len(), 1, "cycle {cycle}");
         assert_eq!(result.fired[0].drift, Drift::OnTime, "cycle {cycle}");
     }
+}
+
+// ── Execute mode tests ──────────────────────────────────────────────────────
+
+/// Execute: single-period late → fires once (no MissedExecution).
+#[test]
+fn execute_single_period_late_fires() {
+    let (clock, mut scheduler) = make_scheduler();
+
+    let task = TaskBuilder::every(
+        Duration::from_millis(500),
+        Window::new(Duration::ZERO, Duration::from_millis(100)),
+    )
+    .name("task")
+    .schedule(PeriodicSchedule::FixedRate)
+    .on_miss(MissedTickBehavior::Execute)
+    .build()
+    .unwrap();
+    scheduler.add_task(task).unwrap();
+
+    // 800ms — 300ms past deadline (500ms), 200ms past window end (600ms).
+    // Only 1 deadline missed, so Execute fires for it directly.
+    clock.advance(Duration::from_millis(800));
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.missed.len(), 0);
+    assert_eq!(
+        result.fired[0].drift,
+        Drift::Late(Duration::from_millis(300))
+    );
+
+    // Re-aligns to grid: last_fired = 500ms. Next deadline = 1000ms.
+    let next = scheduler.calculate_next_tick().unwrap();
+    assert_eq!(next, Duration::from_millis(200));
+}
+
+/// Execute: multi-period late → MissedExecution for earlier + TaskExecution for latest.
+#[test]
+fn execute_multi_period_late() {
+    let (clock, mut scheduler) = make_scheduler();
+
+    let task = TaskBuilder::every(
+        Duration::from_millis(500),
+        Window::new(Duration::ZERO, Duration::from_millis(100)),
+    )
+    .name("task")
+    .schedule(PeriodicSchedule::FixedRate)
+    .on_miss(MissedTickBehavior::Execute)
+    .build()
+    .unwrap();
+    scheduler.add_task(task).unwrap();
+
+    // Fire normally at 500ms.
+    clock.advance(Duration::from_millis(500));
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+
+    // Now at 3500ms (deadline was 1000ms).
+    // elapsed = 3500 - 1000 = 2500ms. periods_elapsed = 2500/500 = 5. count = 6.
+    // Deadlines: 1000, 1500, 2000, 2500, 3000, 3500 → 6 total.
+    // Execute: skip first 5 (MissedExecution), fire for 3500 (latest).
+    clock.advance(Duration::from_millis(3000));
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.missed.len(), 1);
+    assert_eq!(result.missed[0].deadlines_missed.len(), 5);
+    // Latest deadline = 3500ms = now. Drift = 0.
+    assert_eq!(result.fired[0].drift, Drift::Late(Duration::ZERO));
+
+    // Grid re-alignment: last_fired = 3500ms. Next = 4000ms. Sleep = 500ms.
+    let next = scheduler.calculate_next_tick().unwrap();
+    assert_eq!(next, Duration::from_millis(500));
+}
+
+// ── Burst mode tests ────────────────────────────────────────────────────────
+
+/// Burst(None): fires once per missed period (rapid catch-up).
+#[test]
+fn burst_unlimited_fires_all() {
+    let (clock, mut scheduler) = make_scheduler();
+
+    let task = TaskBuilder::every(
+        Duration::from_millis(500),
+        Window::new(Duration::ZERO, Duration::from_millis(100)),
+    )
+    .name("task")
+    .schedule(PeriodicSchedule::FixedRate)
+    .on_miss(MissedTickBehavior::Burst { max: None })
+    .build()
+    .unwrap();
+    scheduler.add_task(task).unwrap();
+
+    // Fire normally at 500ms.
+    clock.advance(Duration::from_millis(500));
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+
+    // Now at 3000ms. Deadlines: 1000, 1500, 2000, 2500, 3000 → 5 total.
+    // elapsed = 3000 - 1000 = 2000ms. periods_elapsed = 2000/500 = 4. count = 5.
+    // Burst(None): fire all 5.
+    clock.advance(Duration::from_millis(2500));
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 5);
+    assert_eq!(result.missed.len(), 0);
+    // Most recent fire has smallest drift.
+    assert_eq!(result.fired[4].drift, Drift::Late(Duration::ZERO));
+    // Earliest fire has largest drift.
+    assert_eq!(
+        result.fired[0].drift,
+        Drift::Late(Duration::from_millis(2000))
+    );
+
+    // Grid re-alignment: last_fired = 3000ms. Next = 3500ms. Sleep = 500ms.
+    let next = scheduler.calculate_next_tick().unwrap();
+    assert_eq!(next, Duration::from_millis(500));
+}
+
+/// Burst(Some(3)): caps fires, overflow → MissedExecution.
+#[test]
+fn burst_capped_fires_with_overflow() {
+    let (clock, mut scheduler) = make_scheduler();
+
+    let task = TaskBuilder::every(
+        Duration::from_millis(500),
+        Window::new(Duration::ZERO, Duration::from_millis(100)),
+    )
+    .name("task")
+    .schedule(PeriodicSchedule::FixedRate)
+    .on_miss(MissedTickBehavior::Burst { max: Some(3) })
+    .build()
+    .unwrap();
+    scheduler.add_task(task).unwrap();
+
+    // Fire normally at 500ms.
+    clock.advance(Duration::from_millis(500));
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+
+    // Now at 3000ms. Deadlines: 1000, 1500, 2000, 2500, 3000 → 5 total.
+    // Burst(max=3): fire 3 most recent (2000, 2500, 3000), skip 2 (1000, 1500).
+    clock.advance(Duration::from_millis(2500));
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 3);
+    assert_eq!(result.missed.len(), 1);
+    assert_eq!(result.missed[0].deadlines_missed.len(), 2);
+    // Skipped deadlines have largest lateness (most late first).
+    assert_eq!(
+        result.missed[0].deadlines_missed[0],
+        Duration::from_millis(2000)
+    );
+    assert_eq!(
+        result.missed[0].deadlines_missed[1],
+        Duration::from_millis(1500)
+    );
 }
 
 /// Edge case: miss lands exactly on a grid point.

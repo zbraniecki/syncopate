@@ -112,107 +112,13 @@ trait SchedulerBackend {
     fn run(&self, scenario: &Scenario) -> ScenarioResult;
 }
 
-// ── TokioIntervalBackend ────────────────────────────────────────────────────
-//
-// Simulates N independent `tokio::time::interval` timers — one per task,
-// no coalescing, no window concept. Each fire resets the clock: the next
-// deadline is `now + period`. Drift = how far the actual inter-fire gap
-// deviated from the target period. No misses — every deadline fires.
-
-struct TokioIntervalBackend;
-
-struct TokioTaskState {
-    period: Duration,
-    next_deadline: Duration,
-    last_fire: Option<Duration>,
-}
-
-impl SchedulerBackend for TokioIntervalBackend {
-    fn name(&self) -> &str {
-        "emulated"
-    }
-
-    fn run(&self, scenario: &Scenario) -> ScenarioResult {
-        let mut tasks: Vec<TokioTaskState> = scenario
-            .tasks
-            .iter()
-            .map(|spec| match spec {
-                TaskSpec::RelativePeriodic { period, .. } => TokioTaskState {
-                    period: *period,
-                    next_deadline: *period,
-                    last_fire: None,
-                },
-            })
-            .collect();
-
-        let start = Instant::now();
-        let mut wakeups = 0usize;
-        let mut fires = 0usize;
-        let mut drifts_ns = Vec::new();
-
-        let Termination::Duration(run_dur) = &scenario.termination;
-
-        loop {
-            let earliest = tasks
-                .iter()
-                .map(|t| t.next_deadline)
-                .min()
-                .expect("no tasks");
-
-            let elapsed = start.elapsed();
-            if elapsed >= *run_dur {
-                break;
-            }
-
-            if earliest > elapsed {
-                std::thread::sleep(earliest - elapsed);
-            }
-
-            let now = start.elapsed();
-            wakeups += 1;
-
-            for task in &mut tasks {
-                while task.next_deadline <= now {
-                    // Drift = how far this fire deviated from the ideal period
-                    // since the last fire. First fire measures from t=0.
-                    let expected = match task.last_fire {
-                        Some(last) => last + task.period,
-                        None => task.period,
-                    };
-                    let drift_ns = now.as_nanos() as i128 - expected.as_nanos() as i128;
-                    fires += 1;
-                    drifts_ns.push(drift_ns);
-
-                    task.last_fire = Some(now);
-                    // Fixed-delay: next deadline is now + period.
-                    task.next_deadline = now + task.period;
-                }
-            }
-
-            if now >= *run_dur {
-                break;
-            }
-        }
-
-        ScenarioResult {
-            backend_name: self.name().to_string(),
-            wakeups,
-            fires,
-            misses: 0, // tokio-interval never misses
-            drifts_ns,
-        }
-    }
-}
-
-// ── RealTokioBackend ────────────────────────────────────────────────────────
-//
 // Uses actual `tokio::time::interval` timers to measure real tokio drift.
 // Wakeups are approximated via an mpsc channel: one recv() = one wakeup,
 // then try_recv() drains any fires that arrived in the same poll cycle.
 
-struct RealTokioBackend;
+struct TokioIntervalBackend;
 
-impl SchedulerBackend for RealTokioBackend {
+impl SchedulerBackend for TokioIntervalBackend {
     fn name(&self) -> &str {
         "tokio-interval"
     }
@@ -373,10 +279,8 @@ impl SchedulerBackend for SyncopateBackend {
                     None => break,
                 };
 
-                let std_instant =
-                    epoch + Duration::from_nanos(deadline_mono.as_nanos() as u64);
-                tokio::time::sleep_until(tokio::time::Instant::from_std(std_instant))
-                    .await;
+                let std_instant = epoch + Duration::from_nanos(deadline_mono.as_nanos() as u64);
+                tokio::time::sleep_until(tokio::time::Instant::from_std(std_instant)).await;
 
                 // Capture time immediately after wakeup — before tick() overhead.
                 let now = Instant::now();
@@ -592,7 +496,6 @@ fn main() {
 
     let backends: Vec<Box<dyn SchedulerBackend>> = vec![
         Box::new(TokioIntervalBackend),
-        Box::new(RealTokioBackend),
         Box::new(SyncopateBackend {
             timer_delay: Duration::ZERO,
             label: "syncopate",
