@@ -48,12 +48,19 @@ fn times_3_fires_three_times_then_gone() {
         .unwrap();
     scheduler.add_task(task).unwrap();
 
-    // Fire 3 times.
-    for i in 1..=3 {
-        clock.advance(Duration::from_millis(100));
-        let result = scheduler.tick();
-        assert_eq!(result.fired.len(), 1, "fire #{i}");
-    }
+    // Fire #1: immediate tick at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1, "fire #1 (immediate)");
+
+    // Fire #2 at t=100ms.
+    clock.advance(Duration::from_millis(100));
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1, "fire #2");
+
+    // Fire #3 at t=200ms.
+    clock.advance(Duration::from_millis(100));
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1, "fire #3");
 
     // 4th tick: task is gone.
     clock.advance(Duration::from_millis(100));
@@ -71,6 +78,10 @@ fn forever_task_keeps_firing() {
         .build()
         .unwrap();
     scheduler.add_task(task).unwrap();
+
+    // Immediate fire at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
 
     for _ in 0..10 {
         clock.advance(Duration::from_millis(100));
@@ -98,17 +109,16 @@ fn mixed_forever_and_limited_tasks() {
     scheduler.add_task(forever_task).unwrap();
     scheduler.add_task(limited_task).unwrap();
 
-    // Tick 1: both fire.
+    // Tick 0 (immediate): both fire.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 2);
+
+    // Tick 1 at t=100ms: both fire (limited has 1 remaining before this tick).
     clock.advance(Duration::from_millis(100));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 2);
 
-    // Tick 2: both fire (limited has 1 remaining before this tick).
-    clock.advance(Duration::from_millis(100));
-    let result = scheduler.tick();
-    assert_eq!(result.fired.len(), 2);
-
-    // Tick 3: only forever fires, limited is evicted.
+    // Tick 2 at t=200ms: only forever fires, limited is evicted.
     clock.advance(Duration::from_millis(100));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);

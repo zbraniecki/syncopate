@@ -3,4 +3,4 @@ pub mod system_time;
 pub mod task;
 
 pub use scheduler::{MissedExecution, TaskExecution, TickResult};
-pub use task::{Drift, MissedTickBehavior, PeriodicSchedule, Repeat, Window};
+pub use task::{Drift, InitialTick, MissedTickBehavior, PeriodicSchedule, Repeat, Window};

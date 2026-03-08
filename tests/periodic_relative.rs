@@ -23,6 +23,15 @@ fn calculate_next_tick_single_task() {
         .unwrap();
     scheduler.add_task(task).unwrap();
 
+    // With Immediate initial tick, the first deadline is at t=0.
+    assert_eq!(scheduler.calculate_next_tick(), Some(Duration::ZERO));
+
+    // Consume the immediate fire at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
+
+    // After consuming, next deadline is at 500ms.
     assert_eq!(
         scheduler.calculate_next_tick(),
         Some(Duration::from_millis(500))
@@ -44,6 +53,14 @@ fn calculate_next_tick_returns_shortest_period() {
     scheduler.add_task(fast).unwrap();
     scheduler.add_task(slow).unwrap();
 
+    // With Immediate initial tick, both tasks have deadline at t=0.
+    assert_eq!(scheduler.calculate_next_tick(), Some(Duration::ZERO));
+
+    // Consume the immediate fires at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 2);
+
+    // After consuming, the soonest deadline is fast's at 100ms.
     assert_eq!(
         scheduler.calculate_next_tick(),
         Some(Duration::from_millis(100))
@@ -66,7 +83,12 @@ fn task_fires_when_deadline_reached() {
         .unwrap();
     scheduler.add_task(task).unwrap();
 
-    // Before deadline: nothing fires.
+    // Consume the immediate fire at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
+
+    // Before deadline (500ms): nothing fires.
     clock.advance(Duration::from_millis(499));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 0);
@@ -91,7 +113,12 @@ fn task_fires_when_past_deadline_within_late_window() {
     .unwrap();
     scheduler.add_task(task).unwrap();
 
-    // 50ms past the deadline — within the 100ms late window, so it fires.
+    // Consume the immediate fire at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
+
+    // 50ms past the deadline (500ms) — within the 100ms late window, so it fires.
     clock.advance(Duration::from_millis(550));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -116,6 +143,11 @@ fn task_fires_early_within_early_window() {
     .unwrap();
     scheduler.add_task(task).unwrap();
 
+    // Consume the immediate fire at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
+
     // 80ms before the deadline (420ms elapsed) — within the 100ms early window.
     clock.advance(Duration::from_millis(420));
     let result = scheduler.tick();
@@ -138,7 +170,12 @@ fn task_missed_when_past_late_window() {
         .unwrap();
     scheduler.add_task(task).unwrap();
 
-    // 50ms past the deadline with zero window — missed.
+    // Consume the immediate fire at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
+
+    // 50ms past the deadline (500ms) with zero window — missed.
     clock.advance(Duration::from_millis(550));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 0);
@@ -162,6 +199,11 @@ fn task_not_yet_due_before_early_window() {
     .unwrap();
     scheduler.add_task(task).unwrap();
 
+    // Consume the immediate fire at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
+
     // 350ms elapsed — still 50ms before the early window opens at 400ms.
     clock.advance(Duration::from_millis(350));
     let result = scheduler.tick();
@@ -181,6 +223,11 @@ fn multiple_tasks_all_fire_at_shared_deadline() {
         scheduler.add_task(task).unwrap();
     }
 
+    // Consume the immediate fires at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 3);
+
+    // All three fire again at 500ms.
     clock.advance(Duration::from_millis(500));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 3);

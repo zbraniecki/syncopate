@@ -1,6 +1,6 @@
 use crate::system_time::{Clock, MonoInstant, RealClock, WallInstant};
 pub use crate::task::Drift;
-use crate::task::{MissedTickBehavior, PeriodicSchedule, Repeat, Task, TaskType};
+use crate::task::{InitialTick, MissedTickBehavior, PeriodicSchedule, Repeat, Task, TaskType};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -32,6 +32,7 @@ pub struct TickResult<'a, Ctx = ()> {
 
 struct ScheduledTask<Ctx = ()> {
     task: Task<Ctx>,
+    added_at: MonoInstant,
     last_fired: Option<MonoInstant>,
     last_wall_deadline: Option<WallInstant>,
     remaining: Option<u32>, // None = forever, Some(n) = n fires left
@@ -39,7 +40,6 @@ struct ScheduledTask<Ctx = ()> {
 
 pub struct Scheduler<Ctx = (), C: Clock = RealClock> {
     clock: C,
-    started_at: MonoInstant,
     timer_delay: Duration,
     tasks: Vec<ScheduledTask<Ctx>>,
 }
@@ -60,10 +60,8 @@ impl<Ctx> Default for Scheduler<Ctx> {
 /// Core API — available for any clock.
 impl<Ctx, C: Clock> Scheduler<Ctx, C> {
     pub fn new_with_clock(clock: C) -> Self {
-        let started_at = clock.monotonic_now();
         Self {
             clock,
-            started_at,
             timer_delay: Duration::ZERO,
             tasks: vec![],
         }
@@ -74,6 +72,8 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
     }
 
     pub fn add_task(&mut self, task: Task<Ctx>) -> Result<(), AddTaskError> {
+        let now = self.clock.monotonic_now();
+
         let last_wall_deadline = match &task.task_type {
             TaskType::Anchored { period, offset, .. } => {
                 let wall_now = self.clock.wall_now();
@@ -90,6 +90,7 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
 
         self.tasks.push(ScheduledTask {
             task,
+            added_at: now,
             last_fired: None,
             last_wall_deadline,
             remaining,
@@ -122,10 +123,15 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
             }
 
             let mono_deadline = match &task.task.task_type {
-                TaskType::Relative { period, .. } => {
-                    let anchor = task.last_fired.unwrap_or(self.started_at);
-                    anchor + *period
-                }
+                TaskType::Relative {
+                    period,
+                    initial_tick,
+                    ..
+                } => match (task.last_fired, initial_tick) {
+                    (Some(fired), _) => fired + *period,
+                    (None, InitialTick::Immediate) => task.added_at,
+                    (None, InitialTick::Delay) => task.added_at + *period,
+                },
                 TaskType::Anchored { period, offset, .. } => {
                     let now = self.clock.monotonic_now();
                     let wall_now = self.clock.wall_now();
@@ -172,11 +178,15 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
                     window,
                     schedule,
                     on_miss,
+                    initial_tick,
                 } => {
-                    let (period, window, schedule, on_miss) =
-                        (*period, *window, *schedule, *on_miss);
-                    let anchor = task.last_fired.unwrap_or(self.started_at);
-                    let next_deadline = anchor + period;
+                    let (period, window, schedule, on_miss, initial_tick) =
+                        (*period, *window, *schedule, *on_miss, *initial_tick);
+                    let next_deadline = match (task.last_fired, initial_tick) {
+                        (Some(fired), _) => fired + period,
+                        (None, InitialTick::Immediate) => task.added_at,
+                        (None, InitialTick::Delay) => task.added_at + period,
+                    };
 
                     let window_start = next_deadline - window.early;
                     let window_end = next_deadline + window.late;

@@ -27,6 +27,15 @@ fn sync_work_after_on_time_tick_compensated_equally() {
             .unwrap();
         scheduler.add_task(task).unwrap();
 
+        // Consume the immediate fire at t=0.
+        let result = scheduler.tick();
+        assert_eq!(result.fired.len(), 1, "{schedule:?}: immediate fire");
+        assert_eq!(
+            result.fired[0].drift,
+            Drift::OnTime,
+            "{schedule:?}: on time at t=0"
+        );
+
         // Advance to exactly the deadline and fire.
         clock.advance(Duration::from_millis(500));
         let result = scheduler.tick();
@@ -61,6 +70,11 @@ fn fixed_rate_catches_up_after_late_fire() {
     .build()
     .unwrap();
     scheduler.add_task(task).unwrap();
+
+    // Consume the immediate fire at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
 
     // Fire 20ms late (at 520ms, within the 100ms late window).
     clock.advance(Duration::from_millis(520));
@@ -99,6 +113,11 @@ fn fixed_delay_does_not_catch_up_after_late_fire() {
     .unwrap();
     scheduler.add_task(task).unwrap();
 
+    // Consume the immediate fire at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
+
     // Fire 20ms late (at 520ms).
     clock.advance(Duration::from_millis(520));
     let result = scheduler.tick();
@@ -134,6 +153,11 @@ fn fixed_rate_late_fire_plus_sync_work() {
     .build()
     .unwrap();
     scheduler.add_task(task).unwrap();
+
+    // Consume the immediate fire at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
 
     // Fire 20ms late.
     clock.advance(Duration::from_millis(520));
@@ -278,6 +302,11 @@ fn fixed_rate_realigns_to_grid_after_miss() {
     .unwrap();
     scheduler.add_task(task).unwrap();
 
+    // Consume the immediate fire at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
+
     // Miss at 800ms (deadline was 500ms, window ends at 600ms).
     clock.advance(Duration::from_millis(800));
     let result = scheduler.tick();
@@ -310,7 +339,13 @@ fn fixed_delay_always_fires_past_window() {
     .unwrap();
     scheduler.add_task(task).unwrap();
 
+    // Consume the immediate fire at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
+
     // 800ms — past the 100ms late window, but FixedDelay always fires.
+    // Deadline is at 500ms (0 + period since FixedDelay anchored last_fired to t=0).
     clock.advance(Duration::from_millis(800));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -340,6 +375,11 @@ fn fixed_rate_large_miss_skips_many_periods() {
     .build()
     .unwrap();
     scheduler.add_task(task).unwrap();
+
+    // Consume the immediate fire at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
 
     // Fire normally at 500ms.
     clock.advance(Duration::from_millis(500));
@@ -430,6 +470,11 @@ fn execute_single_period_late_fires() {
     .unwrap();
     scheduler.add_task(task).unwrap();
 
+    // Consume the immediate fire at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
+
     // 800ms — 300ms past deadline (500ms), 200ms past window end (600ms).
     // Only 1 deadline missed, so Execute fires for it directly.
     clock.advance(Duration::from_millis(800));
@@ -502,6 +547,11 @@ fn burst_unlimited_fires_all() {
     .unwrap();
     scheduler.add_task(task).unwrap();
 
+    // Consume the immediate fire at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
+
     // Fire normally at 500ms.
     clock.advance(Duration::from_millis(500));
     let result = scheduler.tick();
@@ -542,6 +592,11 @@ fn burst_capped_fires_with_overflow() {
     .build()
     .unwrap();
     scheduler.add_task(task).unwrap();
+
+    // Consume the immediate fire at t=0.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
 
     // Fire normally at 500ms.
     clock.advance(Duration::from_millis(500));

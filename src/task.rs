@@ -66,6 +66,15 @@ pub enum PeriodicSchedule {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InitialTick {
+    /// Fire on the first tick after adding the task (like `tokio::time::interval`).
+    #[default]
+    Immediate,
+    /// First fire after one full period has elapsed.
+    Delay,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MissedTickBehavior {
     /// Fire once for the latest deadline.
     /// Earlier missed deadlines produce a MissedExecution.
@@ -118,6 +127,7 @@ pub enum TaskType {
         window: Window,
         schedule: PeriodicSchedule,
         on_miss: MissedTickBehavior,
+        initial_tick: InitialTick,
     },
     Anchored {
         period: Duration,
@@ -163,6 +173,7 @@ pub struct TaskBuilder<Ctx = ()> {
     on_missed: Option<MissCallback<Ctx>>,
     schedule: PeriodicSchedule,
     missed_tick_behavior: MissedTickBehavior,
+    initial_tick: InitialTick,
 }
 
 impl<Ctx> TaskBuilder<Ctx> {
@@ -176,6 +187,7 @@ impl<Ctx> TaskBuilder<Ctx> {
             on_missed: None,
             schedule: PeriodicSchedule::default(),
             missed_tick_behavior: MissedTickBehavior::default(),
+            initial_tick: InitialTick::default(),
         }
     }
 
@@ -187,6 +199,7 @@ impl<Ctx> TaskBuilder<Ctx> {
             window,
             schedule: PeriodicSchedule::default(),
             on_miss: MissedTickBehavior::default(),
+            initial_tick: InitialTick::default(),
         })
     }
 
@@ -196,6 +209,7 @@ impl<Ctx> TaskBuilder<Ctx> {
             window,
             schedule: PeriodicSchedule::default(),
             on_miss: MissedTickBehavior::default(),
+            initial_tick: InitialTick::Delay,
         });
         b.repeat = Repeat::Times(1);
         b
@@ -283,18 +297,25 @@ impl<Ctx> TaskBuilder<Ctx> {
         self
     }
 
+    pub fn initial_tick(mut self, initial_tick: InitialTick) -> Self {
+        self.initial_tick = initial_tick;
+        self
+    }
+
     pub fn build(self) -> Result<Task<Ctx>, TaskBuildError> {
         let mut task_type = self.task_type.ok_or(TaskBuildError::NoTaskType)?;
 
-        // Apply the builder's schedule and miss behavior.
+        // Apply the builder's schedule, miss behavior, and initial tick.
         match &mut task_type {
             TaskType::Relative {
                 schedule: s,
                 on_miss,
+                initial_tick,
                 ..
             } => {
                 *s = self.schedule;
                 *on_miss = self.missed_tick_behavior;
+                *initial_tick = self.initial_tick;
             }
             TaskType::Anchored { on_miss, .. } => {
                 *on_miss = self.missed_tick_behavior;
