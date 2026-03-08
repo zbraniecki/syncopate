@@ -582,7 +582,7 @@ fn render(scenario: &Scenario, events: &[SimEvent]) {
 
         let period_nanos = task.period.as_nanos() as u64;
         let delay_nanos = task.delay.as_nanos() as u64;
-        for col in 0..cols {
+        for col in 0..=cols {
             let col_start = col as u64 * res_nanos;
             let col_end = col_start + res_nanos;
             if has_ideal_deadline(
@@ -603,7 +603,7 @@ fn render(scenario: &Scenario, events: &[SimEvent]) {
     // Scheduler ticks row.
     {
         print!("{:>width$}  ", "Sched ticks", width = label_width);
-        for col in 0..cols {
+        for col in 0..=cols {
             let col_start = col as u64 * res_nanos;
             let col_end = col_start + res_nanos;
             let any = scenario.tasks.iter().any(|t| {
@@ -627,12 +627,12 @@ fn render(scenario: &Scenario, events: &[SimEvent]) {
     // Disruptions row.
     if !scenario.disruptions.is_empty() {
         print!("{:>width$}  ", "Disruptions", width = label_width);
-        let mut row = vec![' '; cols];
+        let mut row = vec![' '; cols + 1];
         for d in &scenario.disruptions {
             let start_col = (d.at.as_nanos() as u64 / res_nanos) as usize;
             let end_col =
                 ((d.at.as_nanos() as u64 + d.duration.as_nanos() as u64) / res_nanos) as usize;
-            for c in start_col..end_col.min(cols) {
+            for c in start_col..end_col.min(cols + 1) {
                 row[c] = '~';
             }
         }
@@ -651,20 +651,20 @@ fn render(scenario: &Scenario, events: &[SimEvent]) {
         let label = format!("{} actual", task.name);
         print!("{:>width$}  ", label, width = label_width);
 
-        let mut row = vec![' '; cols];
+        let mut row = vec![' '; cols + 1];
 
         for d in &scenario.disruptions {
             let start_col = (d.at.as_nanos() as u64 / res_nanos) as usize;
             let end_col =
                 ((d.at.as_nanos() as u64 + d.duration.as_nanos() as u64) / res_nanos) as usize;
-            for c in start_col..end_col.min(cols) {
+            for c in start_col..end_col.min(cols + 1) {
                 row[c] = '~';
             }
         }
 
         for event in events.iter().filter(|e| e.task_name == task.name) {
             let col = (event.at_nanos / res_nanos) as usize;
-            if col < cols {
+            if col <= cols {
                 match event.kind {
                     EventKind::Fired => row[col] = 'V',
                     EventKind::Missed => {
@@ -702,17 +702,20 @@ fn render(scenario: &Scenario, events: &[SimEvent]) {
 fn print_ruler(label_width: usize, cols: usize, res_nanos: u64, duration_nanos: u64) {
     let ruler_interval = pick_ruler_interval(duration_nanos);
 
-    let mut num_line = vec![b' '; cols];
-    let mut tick_line = vec![b' '; cols];
+    // The final tick label may extend beyond `cols`; compute the needed width.
+    let final_label = fmt_duration(Duration::from_nanos(duration_nanos));
+    let buf_len = cols + 1 + final_label.len();
+    let mut num_line = vec![b' '; buf_len];
+    let mut tick_line = vec![b' '; buf_len];
 
     let mut tick = 0u64;
     while tick <= duration_nanos {
         let col = (tick / res_nanos) as usize;
-        if col < cols {
+        if col <= cols {
             tick_line[col] = b'|';
             let label = fmt_duration(Duration::from_nanos(tick));
             let label_bytes = label.as_bytes();
-            if col + label_bytes.len() <= cols {
+            if col + label_bytes.len() <= buf_len {
                 num_line[col..col + label_bytes.len()].copy_from_slice(label_bytes);
             }
         }
