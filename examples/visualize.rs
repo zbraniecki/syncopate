@@ -613,14 +613,11 @@ fn simulate(scenario: &Scenario) -> SimResult {
             }
         }
 
-        // Add any pending tasks whose delay has been reached.
+        // Add any pending tasks whose delay has been reached (no tick).
         while let Some(&(delay, _)) = pending_tasks.first() {
             if delay <= current_nanos {
                 let (_, st) = pending_tasks.remove(0);
                 add_scenario_task(&mut scheduler, st);
-                // Tick immediately so Immediate tasks fire at their delay point.
-                tick_times.push(current_nanos);
-                record_tick(&scheduler.tick(), current_nanos, &mut events);
             } else {
                 break;
             }
@@ -631,7 +628,8 @@ fn simulate(scenario: &Scenario) -> SimResult {
             Some(d) => d,
             None => {
                 // No tasks scheduled yet. If there are pending tasks, advance
-                // to the earliest one's delay; otherwise we're done.
+                // to the earliest one's delay, add it (no tick), then re-enter
+                // the loop so calculate_next_tick() sees the new task.
                 if let Some(&(delay, _)) = pending_tasks.first() {
                     let step = delay.saturating_sub(current_nanos).max(1);
                     clock.advance(Duration::from_nanos(step));
@@ -651,22 +649,36 @@ fn simulate(scenario: &Scenario) -> SimResult {
             clock.advance(Duration::from_nanos(1));
             current_nanos += 1;
         } else {
-            // Check if a pending task or disruption needs to fire before advance target.
             let mut target = current_nanos + advance;
-            if let Some(&(delay, _)) = pending_tasks.first() {
-                if delay < target && delay > current_nanos {
-                    target = delay;
-                }
-            }
+
+            // Check if a disruption needs to fire before the advance target.
             if next_disruption < disruptions.len() {
                 let d_at = disruptions[next_disruption].at.as_nanos() as u64;
                 if d_at < target && d_at > current_nanos {
                     target = d_at;
                 }
             }
+
+            // Advance toward target, adding pending tasks along the way (no tick).
+            while let Some(&(delay, _)) = pending_tasks.first() {
+                if delay > current_nanos && delay <= target {
+                    // Advance to pending task's delay and add it.
+                    let step = delay - current_nanos;
+                    clock.advance(Duration::from_nanos(step));
+                    current_nanos = delay;
+                    let (_, st) = pending_tasks.remove(0);
+                    add_scenario_task(&mut scheduler, st);
+                } else {
+                    break;
+                }
+            }
+
+            // Advance remaining distance to target.
             let step = target - current_nanos;
-            clock.advance(Duration::from_nanos(step));
-            current_nanos = target;
+            if step > 0 {
+                clock.advance(Duration::from_nanos(step));
+                current_nanos = target;
+            }
         }
 
         tick_times.push(current_nanos);
@@ -736,14 +748,11 @@ async fn simulate_real(scenario: &Scenario) -> SimResult {
             }
         }
 
-        // Add any pending tasks whose delay has been reached.
+        // Add any pending tasks whose delay has been reached (no tick).
         while let Some(&(delay, _)) = pending_tasks.first() {
             if delay <= elapsed_nanos {
                 let (_, st) = pending_tasks.remove(0);
                 add_scenario_task(&mut scheduler, st);
-                let at = start.elapsed().as_nanos() as u64;
-                tick_times.push(at);
-                record_tick(&scheduler.tick(), at, &mut events);
             } else {
                 break;
             }

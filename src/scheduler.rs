@@ -84,7 +84,13 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
             TaskType::Anchored { period, offset, .. } => {
                 let wall_now = self.clock.wall_now();
                 let offset_dur = offset.unwrap_or(Duration::ZERO);
-                floor_wall_deadline(wall_now, *period, offset_dur)
+                let floor = floor_wall_deadline(wall_now, *period, offset_dur);
+                match floor {
+                    // Exactly on a boundary: don't mark it as serviced so it can fire
+                    Some(f) if f == wall_now => None,
+                    // Between boundaries: mark the floor as serviced
+                    other => other,
+                }
             }
             _ => None,
         };
@@ -552,7 +558,18 @@ fn next_absolute_deadline(
         Some(current) if last_wall_deadline.is_some_and(|last| last >= current) => {
             last_wall_deadline.unwrap() + period
         }
-        Some(current) => current,
+        Some(current) => {
+            // If more than one period was skipped since last_wall_deadline,
+            // return the first un-serviced deadline so intermediate misses
+            // are detected by the caller.
+            if let Some(last) = last_wall_deadline {
+                let next_after_last = last + period;
+                if next_after_last < current {
+                    return next_after_last;
+                }
+            }
+            current
+        }
         None => match last_wall_deadline {
             Some(last) if last >= WallInstant(offset_dur.as_nanos() as u64) => last + period,
             _ => WallInstant(offset_dur.as_nanos() as u64),

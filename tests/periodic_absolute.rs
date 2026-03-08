@@ -26,7 +26,12 @@ fn fires_at_wall_clock_boundary() {
     .unwrap();
     scheduler.add_task(task).unwrap();
 
-    // Before deadline: nothing fires.
+    // At t=0: fires on the 0ms boundary.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
+
+    // Before next deadline: nothing fires.
     clock.advance(Duration::from_millis(399));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 0);
@@ -51,6 +56,11 @@ fn fires_within_early_window() {
     .build()
     .unwrap();
     scheduler.add_task(task).unwrap();
+
+    // At t=0: fires on the 0ms boundary.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
 
     // 490ms = 10ms before the 500ms deadline, within the 100ms early window.
     clock.advance(Duration::from_millis(490));
@@ -211,8 +221,15 @@ fn calculate_next_tick_returns_correct_duration() {
         .unwrap();
     scheduler.add_task(task).unwrap();
 
-    // At time 0, the 0ms boundary is already "serviced" (initialized in add_task).
-    // Next deadline is 500ms. With ZERO window, should return 500ms.
+    // At time 0, the 0ms boundary is pending. Fire it first.
+    assert_eq!(
+        scheduler.calculate_next_tick(),
+        Some(Duration::ZERO)
+    );
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+
+    // Now next deadline is 500ms. With ZERO window, should return 500ms.
     assert_eq!(
         scheduler.calculate_next_tick(),
         Some(Duration::from_millis(500))
@@ -250,7 +267,15 @@ fn calculate_next_tick_with_early_window() {
     .unwrap();
     scheduler.add_task(task).unwrap();
 
-    // At time 0, next deadline is 500ms. Should return 500ms (targets deadline,
+    // At time 0, the 0ms boundary is pending. Fire it first.
+    assert_eq!(
+        scheduler.calculate_next_tick(),
+        Some(Duration::ZERO)
+    );
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+
+    // Now next deadline is 500ms. Should return 500ms (targets deadline,
     // not early window — the window is tolerance, not a scheduling target).
     assert_eq!(
         scheduler.calculate_next_tick(),
@@ -278,7 +303,11 @@ fn does_not_fire_before_early_window() {
     .unwrap();
     scheduler.add_task(task).unwrap();
 
-    // At 440ms: 60ms before deadline, outside the 50ms early window.
+    // At t=0: fires on the 0ms boundary.
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+
+    // At 440ms: 60ms before the 500ms deadline, outside the 50ms early window.
     clock.advance(Duration::from_millis(440));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 0);
