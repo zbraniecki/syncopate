@@ -1,14 +1,73 @@
 use std::time::Duration;
 use thiserror::Error;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Drift {
+    Early(Duration),
+    OnTime,
+    Late(Duration),
+}
+
+impl Drift {
+    pub fn as_nanos_signed(&self) -> i128 {
+        match self {
+            Drift::Early(d) => -(d.as_nanos() as i128),
+            Drift::OnTime => 0,
+            Drift::Late(d) => d.as_nanos() as i128,
+        }
+    }
+}
+
+impl std::fmt::Display for Drift {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Drift::Early(d) => {
+                write!(f, "-")?;
+                fmt_duration(*d, f)
+            }
+            Drift::OnTime => write!(f, "0ns"),
+            Drift::Late(d) => {
+                write!(f, "+")?;
+                fmt_duration(*d, f)
+            }
+        }
+    }
+}
+
+/// Format a `Duration` using the most readable unit.
+fn fmt_duration(d: Duration, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let nanos = d.as_nanos();
+    if nanos < 1_000 {
+        write!(f, "{}ns", nanos)
+    } else if nanos < 1_000_000 {
+        write!(f, "{}µs", nanos / 1_000)
+    } else if nanos < 1_000_000_000 {
+        write!(f, "{}ms", nanos / 1_000_000)
+    } else {
+        let secs = d.as_secs();
+        let ms = (nanos % 1_000_000_000) / 1_000_000;
+        if ms == 0 {
+            write!(f, "{}s", secs)
+        } else {
+            write!(f, "{}.{:03}s", secs, ms)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PeriodicSchedule {
     /// Period measured from ideal deadline to ideal deadline.
     /// Self-correcting: tick processing time doesn't affect cadence.
+    ///
+    /// On miss (beyond window): re-aligns to the periodic grid.
+    /// Equivalent to tokio's `MissedTickBehavior::Skip`.
     #[default]
     FixedRate,
     /// Period measured from actual fire time.
     /// Tick processing time extends the total cycle.
+    ///
+    /// On miss (beyond window): next period starts from `now`.
+    /// Equivalent to tokio's `MissedTickBehavior::Delay`.
     FixedDelay,
 }
 
@@ -64,8 +123,8 @@ pub enum Repeat {
     Times(u32),
 }
 
-pub type TaskCallback<Ctx> = fn(&Ctx);
-pub type MissCallback<Ctx> = fn(&Ctx);
+pub type TaskCallback<Ctx> = fn(&Ctx, Drift);
+pub type MissCallback<Ctx> = fn(&Ctx, &[Duration]);
 
 #[derive(Debug)]
 pub struct Task<Ctx = ()> {

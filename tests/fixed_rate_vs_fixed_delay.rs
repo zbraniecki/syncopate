@@ -260,3 +260,186 @@ fn multi_cycle_drift_accumulation() {
         // (only the current cycle's overshoot, prior cycles corrected).
     }
 }
+
+/// FixedRate: after a miss (beyond window), re-aligns to the periodic grid.
+/// period=500ms, window=100ms late, miss at 800ms.
+/// Next deadline should be 1000ms (grid), not 1300ms (now + period).
+#[test]
+fn fixed_rate_realigns_to_grid_after_miss() {
+    let (clock, mut scheduler) = make_scheduler();
+
+    let task = TaskBuilder::every(
+        Duration::from_millis(500),
+        Window::new(Duration::ZERO, Duration::from_millis(100)),
+    )
+    .name("task")
+    .schedule(PeriodicSchedule::FixedRate)
+    .build()
+    .unwrap();
+    scheduler.add_task(task).unwrap();
+
+    // Miss at 800ms (deadline was 500ms, window ends at 600ms).
+    clock.advance(Duration::from_millis(800));
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 0);
+    assert_eq!(result.missed.len(), 1);
+    assert_eq!(
+        result.missed[0].deadlines_missed,
+        vec![Duration::from_millis(300)]
+    );
+
+    // FixedRate should re-align: last_fired = 500ms (grid point).
+    // Next deadline = 500 + 500 = 1000ms. Sleep = 1000 - 800 = 200ms.
+    let next = scheduler.calculate_next_tick().unwrap();
+    assert_eq!(next, Duration::from_millis(200));
+}
+
+/// FixedDelay: after a miss, next period starts from `now` — no grid alignment.
+#[test]
+fn fixed_delay_does_not_realign_after_miss() {
+    let (clock, mut scheduler) = make_scheduler();
+
+    let task = TaskBuilder::every(
+        Duration::from_millis(500),
+        Window::new(Duration::ZERO, Duration::from_millis(100)),
+    )
+    .name("task")
+    .schedule(PeriodicSchedule::FixedDelay)
+    .build()
+    .unwrap();
+    scheduler.add_task(task).unwrap();
+
+    // Miss at 800ms.
+    clock.advance(Duration::from_millis(800));
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 0);
+    assert_eq!(result.missed.len(), 1);
+
+    // FixedDelay anchors to now: next deadline = 800 + 500 = 1300ms. Sleep = 500ms.
+    let next = scheduler.calculate_next_tick().unwrap();
+    assert_eq!(next, Duration::from_millis(500));
+}
+
+/// FixedRate: large miss (5 seconds) skips many periods but reports 1 miss,
+/// then recovers back to grid.
+#[test]
+fn fixed_rate_large_miss_skips_many_periods() {
+    let (clock, mut scheduler) = make_scheduler();
+
+    let task = TaskBuilder::every(
+        Duration::from_millis(500),
+        Window::new(Duration::ZERO, Duration::from_millis(100)),
+    )
+    .name("task")
+    .schedule(PeriodicSchedule::FixedRate)
+    .build()
+    .unwrap();
+    scheduler.add_task(task).unwrap();
+
+    // Fire normally at 500ms.
+    clock.advance(Duration::from_millis(500));
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+
+    // Simulate 5-second sleep. Now = 5500ms, deadline was 1000ms.
+    // Missed deadlines: 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500.
+    // Lateness:         4500, 4000, 3500, 3000, 2500, 2000, 1500, 1000,  500,    0.
+    clock.advance(Duration::from_millis(5000));
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 0);
+    assert_eq!(result.missed.len(), 1);
+    assert_eq!(result.missed[0].deadlines_missed.len(), 10);
+    assert_eq!(
+        result.missed[0].deadlines_missed[0],
+        Duration::from_millis(4500)
+    );
+    assert_eq!(
+        result.missed[0].deadlines_missed[9],
+        Duration::ZERO
+    );
+
+    // Grid re-alignment: elapsed = 5500 - 1000 = 4500ms.
+    // periods_elapsed = 4500 / 500 = 9. last_fired = 1000 + 500*9 = 5500ms.
+    // Next deadline = 5500 + 500 = 6000ms. Sleep = 6000 - 5500 = 500ms.
+    let next = scheduler.calculate_next_tick().unwrap();
+    assert_eq!(next, Duration::from_millis(500));
+
+    // Fire at 6000ms — back on grid.
+    clock.advance(Duration::from_millis(500));
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
+}
+
+/// FixedRate: after miss recovery, subsequent ticks stay on the original grid.
+#[test]
+fn fixed_rate_miss_then_recovery_preserves_grid_long_term() {
+    let (clock, mut scheduler) = make_scheduler();
+
+    let task = TaskBuilder::every(
+        Duration::from_millis(500),
+        Window::new(Duration::ZERO, Duration::from_millis(100)),
+    )
+    .name("task")
+    .schedule(PeriodicSchedule::FixedRate)
+    .build()
+    .unwrap();
+    scheduler.add_task(task).unwrap();
+
+    // Miss at 800ms.
+    clock.advance(Duration::from_millis(800));
+    let result = scheduler.tick();
+    assert_eq!(result.missed.len(), 1);
+
+    // Recover: next tick at 1000ms.
+    let next = scheduler.calculate_next_tick().unwrap();
+    assert_eq!(next, Duration::from_millis(200));
+    clock.advance(next);
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
+
+    // Verify 5 subsequent ticks stay on grid (1500, 2000, 2500, 3000, 3500).
+    for cycle in 0..5 {
+        let next = scheduler.calculate_next_tick().unwrap();
+        assert_eq!(next, Duration::from_millis(500), "cycle {cycle}");
+        clock.advance(next);
+        let result = scheduler.tick();
+        assert_eq!(result.fired.len(), 1, "cycle {cycle}");
+        assert_eq!(result.fired[0].drift, Drift::OnTime, "cycle {cycle}");
+    }
+}
+
+/// Edge case: miss lands exactly on a grid point.
+#[test]
+fn fixed_rate_miss_at_exact_grid_boundary() {
+    let (clock, mut scheduler) = make_scheduler();
+
+    let task = TaskBuilder::every(
+        Duration::from_millis(500),
+        Window::new(Duration::ZERO, Duration::from_millis(100)),
+    )
+    .name("task")
+    .schedule(PeriodicSchedule::FixedRate)
+    .build()
+    .unwrap();
+    scheduler.add_task(task).unwrap();
+
+    // Miss at exactly 1000ms (deadline was 500ms, window ends at 600ms).
+    // This is exactly the next grid point.
+    clock.advance(Duration::from_millis(1000));
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 0);
+    assert_eq!(result.missed.len(), 1);
+
+    // elapsed = 1000 - 500 = 500ms. periods_elapsed = 500/500 = 1.
+    // last_fired = 500 + 500*1 = 1000ms. Next deadline = 1500ms. Sleep = 500ms.
+    let next = scheduler.calculate_next_tick().unwrap();
+    assert_eq!(next, Duration::from_millis(500));
+
+    // Fire at 1500ms — on grid.
+    clock.advance(Duration::from_millis(500));
+    let result = scheduler.tick();
+    assert_eq!(result.fired.len(), 1);
+    assert_eq!(result.fired[0].drift, Drift::OnTime);
+}

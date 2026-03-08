@@ -1,5 +1,6 @@
 use crate::system_time::{Clock, MonoInstant, RealClock, WallInstant};
 use crate::task::{PeriodicSchedule, Repeat, Task, TaskType};
+pub use crate::task::Drift;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -11,39 +12,6 @@ pub enum AddTaskError {
     ClockWentBackward,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Drift {
-    Early(Duration),
-    OnTime,
-    Late(Duration),
-}
-
-impl Drift {
-    pub fn as_nanos_signed(&self) -> i128 {
-        match self {
-            Drift::Early(d) => -(d.as_nanos() as i128),
-            Drift::OnTime => 0,
-            Drift::Late(d) => d.as_nanos() as i128,
-        }
-    }
-}
-
-impl std::fmt::Display for Drift {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Drift::Early(d) => {
-                write!(f, "-")?;
-                fmt_duration(*d, f)
-            }
-            Drift::OnTime => write!(f, "0ns"),
-            Drift::Late(d) => {
-                write!(f, "+")?;
-                fmt_duration(*d, f)
-            }
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct TaskExecution<'a, Ctx = ()> {
     pub task: &'a Task<Ctx>,
@@ -51,9 +19,15 @@ pub struct TaskExecution<'a, Ctx = ()> {
 }
 
 #[derive(Debug)]
+pub struct MissedExecution<'a, Ctx = ()> {
+    pub task: &'a Task<Ctx>,
+    pub deadlines_missed: Vec<Duration>,
+}
+
+#[derive(Debug)]
 pub struct TickResult<'a, Ctx = ()> {
     pub fired: Vec<TaskExecution<'a, Ctx>>,
-    pub missed: Vec<TaskExecution<'a, Ctx>>,
+    pub missed: Vec<MissedExecution<'a, Ctx>>,
 }
 
 struct ScheduledTask<Ctx = ()> {
@@ -123,9 +97,22 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
         Ok(())
     }
 
+    /// Returns the absolute monotonic deadline for the next tick, adjusted for
+    /// `timer_delay`. Use with `tokio::time::sleep_until` for maximum precision.
+    pub fn next_tick_deadline(&self) -> Option<MonoInstant> {
+        self.soonest_deadline().map(|t| t - self.timer_delay)
+    }
+
     /// Returns how long the caller should sleep before calling `tick`.
     pub fn calculate_next_tick(&self) -> Option<Duration> {
         let now = self.clock.monotonic_now();
+        self.soonest_deadline().map(|t| {
+            t.saturating_duration_since(now)
+                .saturating_sub(self.timer_delay)
+        })
+    }
+
+    fn soonest_deadline(&self) -> Option<MonoInstant> {
         let mut soonest: Option<MonoInstant> = None;
 
         for task in &self.tasks {
@@ -140,6 +127,7 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
                     anchor + *period
                 }
                 TaskType::Anchored { period, offset, .. } => {
+                    let now = self.clock.monotonic_now();
                     let wall_now = self.clock.wall_now();
                     let offset_dur = offset.unwrap_or(Duration::ZERO);
                     let deadline = next_absolute_deadline(
@@ -166,10 +154,7 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
             });
         }
 
-        soonest.map(|t| {
-            t.saturating_duration_since(now)
-                .saturating_sub(self.timer_delay)
-        })
+        soonest
     }
 
     pub fn tick(&mut self) -> TickResult<'_, Ctx> {
@@ -213,10 +198,26 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
                             drift,
                         });
                     } else {
-                        task.last_fired = Some(now);
-                        missed.push(TaskExecution {
+                        let elapsed_ns = (now - next_deadline).as_nanos();
+                        let period_ns = period.as_nanos();
+                        let periods_elapsed = elapsed_ns / period_ns;
+                        let count = periods_elapsed as u32 + 1;
+                        let deadlines_missed: Vec<Duration> = (0..count)
+                            .map(|i| {
+                                let deadline_offset = period_ns * i as u128;
+                                Duration::from_nanos((elapsed_ns - deadline_offset) as u64)
+                            })
+                            .collect();
+
+                        task.last_fired = Some(match schedule {
+                            PeriodicSchedule::FixedRate => {
+                                next_deadline + period * (periods_elapsed as u32)
+                            }
+                            PeriodicSchedule::FixedDelay => now,
+                        });
+                        missed.push(MissedExecution {
                             task: &task.task,
-                            drift,
+                            deadlines_missed,
                         });
                     }
                 }
@@ -266,11 +267,25 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
                             drift,
                         });
                     } else {
-                        task.last_wall_deadline = Some(deadline);
+                        let elapsed_ns = wall_now.as_nanos() - deadline.as_nanos();
+                        let period_ns = period.as_nanos() as u64;
+                        let periods_elapsed = elapsed_ns / period_ns;
+                        let count = periods_elapsed as u32 + 1;
+                        let deadlines_missed: Vec<Duration> = (0..count)
+                            .map(|i| {
+                                let deadline_offset = period_ns * i as u64;
+                                Duration::from_nanos(elapsed_ns - deadline_offset)
+                            })
+                            .collect();
+
+                        let last_missed = WallInstant(
+                            deadline.as_nanos() + period_ns * periods_elapsed,
+                        );
+                        task.last_wall_deadline = Some(last_missed);
                         task.last_fired = Some(now);
-                        missed.push(TaskExecution {
+                        missed.push(MissedExecution {
                             task: &task.task,
-                            drift,
+                            deadlines_missed,
                         });
                     }
                 }
@@ -330,22 +345,3 @@ fn floor_wall_deadline(
     Some(WallInstant(aligned))
 }
 
-/// Format a `Duration` using the most readable unit.
-fn fmt_duration(d: Duration, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let nanos = d.as_nanos();
-    if nanos < 1_000 {
-        write!(f, "{}ns", nanos)
-    } else if nanos < 1_000_000 {
-        write!(f, "{}µs", nanos / 1_000)
-    } else if nanos < 1_000_000_000 {
-        write!(f, "{}ms", nanos / 1_000_000)
-    } else {
-        let secs = d.as_secs();
-        let ms = (nanos % 1_000_000_000) / 1_000_000;
-        if ms == 0 {
-            write!(f, "{}s", secs)
-        } else {
-            write!(f, "{}.{:03}s", secs, ms)
-        }
-    }
-}

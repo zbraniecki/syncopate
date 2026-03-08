@@ -3,14 +3,15 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use comfy_table::{Table, presets::UTF8_FULL};
 use syncopate::scheduler::Scheduler;
-use syncopate::task::{TaskBuilder, Window};
+use syncopate::task::{PeriodicSchedule, TaskBuilder, Window};
+use tokio::sync::mpsc;
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
 #[derive(Parser, Debug)]
 #[command(
     name = "bench_compare",
-    about = "Compare syncopate against a naive polling scheduler"
+    about = "Compare syncopate against independent tokio-style intervals"
 )]
 struct Args {
     /// Substring filter on scenario names.
@@ -25,10 +26,6 @@ struct Args {
     /// duration, NOT task periods.
     #[arg(long, default_value_t = 1.0)]
     scale: f64,
-
-    /// Naive backend poll interval in nanoseconds (default: 10_000_000 = 10ms).
-    #[arg(long, default_value_t = 10_000_000)]
-    naive_poll_ns: u64,
 }
 
 // ── Spec types ───────────────────────────────────────────────────────────────
@@ -46,23 +43,11 @@ enum TaskSpec {
         period: Duration,
         window: WindowSpec,
     },
-    AnchoredPeriodic {
-        name: String,
-        period: Duration,
-        offset: Option<Duration>,
-        window: WindowSpec,
-    },
-    OneShot {
-        name: String,
-        delay: Duration,
-        window: WindowSpec,
-    },
 }
 
 #[derive(Clone)]
 enum Termination {
     Duration(Duration),
-    UntilAllFired,
 }
 
 #[derive(Clone)]
@@ -83,6 +68,13 @@ struct ScenarioResult {
 }
 
 impl ScenarioResult {
+    fn fires_per_wakeup(&self) -> f64 {
+        if self.wakeups == 0 {
+            return 0.0;
+        }
+        self.fires as f64 / self.wakeups as f64
+    }
+
     fn drift_max(&self) -> f64 {
         self.drifts_ns
             .iter()
@@ -120,18 +112,236 @@ trait SchedulerBackend {
     fn run(&self, scenario: &Scenario) -> ScenarioResult;
 }
 
-// ── SyncopateBackend ─────────────────────────────────────────────────────────
+// ── TokioIntervalBackend ────────────────────────────────────────────────────
+//
+// Simulates N independent `tokio::time::interval` timers — one per task,
+// no coalescing, no window concept. Each fire resets the clock: the next
+// deadline is `now + period`. Drift = how far the actual inter-fire gap
+// deviated from the target period. No misses — every deadline fires.
 
-struct SyncopateBackend;
+struct TokioIntervalBackend;
 
-impl SchedulerBackend for SyncopateBackend {
+struct TokioTaskState {
+    period: Duration,
+    next_deadline: Duration,
+    last_fire: Option<Duration>,
+}
+
+impl SchedulerBackend for TokioIntervalBackend {
     fn name(&self) -> &str {
-        "syncopate"
+        "emulated"
     }
 
     fn run(&self, scenario: &Scenario) -> ScenarioResult {
+        let mut tasks: Vec<TokioTaskState> = scenario
+            .tasks
+            .iter()
+            .map(|spec| match spec {
+                TaskSpec::RelativePeriodic { period, .. } => TokioTaskState {
+                    period: *period,
+                    next_deadline: *period,
+                    last_fire: None,
+                },
+            })
+            .collect();
+
+        let start = Instant::now();
+        let mut wakeups = 0usize;
+        let mut fires = 0usize;
+        let mut drifts_ns = Vec::new();
+
+        let Termination::Duration(run_dur) = &scenario.termination;
+
+        loop {
+            let earliest = tasks
+                .iter()
+                .map(|t| t.next_deadline)
+                .min()
+                .expect("no tasks");
+
+            let elapsed = start.elapsed();
+            if elapsed >= *run_dur {
+                break;
+            }
+
+            if earliest > elapsed {
+                std::thread::sleep(earliest - elapsed);
+            }
+
+            let now = start.elapsed();
+            wakeups += 1;
+
+            for task in &mut tasks {
+                while task.next_deadline <= now {
+                    // Drift = how far this fire deviated from the ideal period
+                    // since the last fire. First fire measures from t=0.
+                    let expected = match task.last_fire {
+                        Some(last) => last + task.period,
+                        None => task.period,
+                    };
+                    let drift_ns = now.as_nanos() as i128 - expected.as_nanos() as i128;
+                    fires += 1;
+                    drifts_ns.push(drift_ns);
+
+                    task.last_fire = Some(now);
+                    // Fixed-delay: next deadline is now + period.
+                    task.next_deadline = now + task.period;
+                }
+            }
+
+            if now >= *run_dur {
+                break;
+            }
+        }
+
+        ScenarioResult {
+            backend_name: self.name().to_string(),
+            wakeups,
+            fires,
+            misses: 0, // tokio-interval never misses
+            drifts_ns,
+        }
+    }
+}
+
+// ── RealTokioBackend ────────────────────────────────────────────────────────
+//
+// Uses actual `tokio::time::interval` timers to measure real tokio drift.
+// Wakeups are approximated via an mpsc channel: one recv() = one wakeup,
+// then try_recv() drains any fires that arrived in the same poll cycle.
+
+struct RealTokioBackend;
+
+impl SchedulerBackend for RealTokioBackend {
+    fn name(&self) -> &str {
+        "tokio-interval"
+    }
+
+    fn run(&self, scenario: &Scenario) -> ScenarioResult {
+        let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+
+        rt.block_on(async {
+            let Termination::Duration(run_dur) = &scenario.termination;
+            let run_dur = *run_dur;
+
+            let (tx, mut rx) = mpsc::unbounded_channel::<(usize, Instant)>();
+
+            let start = Instant::now();
+
+            // Spawn one task per interval
+            for (task_id, spec) in scenario.tasks.iter().enumerate() {
+                let period = match spec {
+                    TaskSpec::RelativePeriodic { period, .. } => *period,
+                };
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(period);
+                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    // Skip the immediate first tick
+                    interval.tick().await;
+                    loop {
+                        interval.tick().await;
+                        let now = Instant::now();
+                        if now.duration_since(start) >= run_dur {
+                            break;
+                        }
+                        if tx.send((task_id, now)).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+            // Drop our copy so the channel closes when all senders finish
+            drop(tx);
+
+            let num_tasks = scenario.tasks.len();
+            let periods: Vec<Duration> = scenario
+                .tasks
+                .iter()
+                .map(|spec| match spec {
+                    TaskSpec::RelativePeriodic { period, .. } => *period,
+                })
+                .collect();
+
+            let mut last_fire: Vec<Option<Instant>> = vec![None; num_tasks];
+            let mut wakeups = 0usize;
+            let mut fires = 0usize;
+            let mut drifts_ns = Vec::new();
+
+            // Collector loop
+            while let Some((task_id, fire_time)) = rx.recv().await {
+                wakeups += 1;
+
+                // Process this fire
+                let expected = match last_fire[task_id] {
+                    Some(last) => last + periods[task_id],
+                    None => start + periods[task_id],
+                };
+                let drift_ns = fire_time.duration_since(start).as_nanos() as i128
+                    - expected.duration_since(start).as_nanos() as i128;
+                drifts_ns.push(drift_ns);
+                last_fire[task_id] = Some(fire_time);
+                fires += 1;
+
+                // Drain any fires that arrived in the same poll cycle
+                while let Ok((task_id, fire_time)) = rx.try_recv() {
+                    let expected = match last_fire[task_id] {
+                        Some(last) => last + periods[task_id],
+                        None => start + periods[task_id],
+                    };
+                    let drift_ns = fire_time.duration_since(start).as_nanos() as i128
+                        - expected.duration_since(start).as_nanos() as i128;
+                    drifts_ns.push(drift_ns);
+                    last_fire[task_id] = Some(fire_time);
+                    fires += 1;
+                }
+            }
+
+            ScenarioResult {
+                backend_name: self.name().to_string(),
+                wakeups,
+                fires,
+                misses: 0,
+                drifts_ns,
+            }
+        })
+    }
+}
+
+// ── SyncopateBackend ─────────────────────────────────────────────────────────
+//
+// Measures inter-fire gap drift externally — the same way tokio-interval does:
+// capture Instant::now() right after wakeup, drift = gap - period.
+//
+// Uses FixedRate + sleep_until so the scheduler self-corrects for consistent
+// OS oversleep (just like tokio::time::interval does internally). The
+// scheduler's own exec.drift is NOT used because it includes overhead between
+// sleep return and tick()'s internal clock read.
+
+struct SyncopateBackend {
+    timer_delay: Duration,
+    label: &'static str,
+}
+
+impl SchedulerBackend for SyncopateBackend {
+    fn name(&self) -> &str {
+        self.label
+    }
+
+    fn run(&self, scenario: &Scenario) -> ScenarioResult {
+        // Capture epoch right before scheduler creation so it aligns with
+        // the RealClock's internal mono_epoch.
+        let epoch = Instant::now();
         let mut scheduler: Scheduler<()> = Scheduler::new();
-        scheduler.set_timer_delay(Duration::from_millis(5));
+        scheduler.set_timer_delay(self.timer_delay);
+
+        let periods: Vec<Duration> = scenario
+            .tasks
+            .iter()
+            .map(|spec| match spec {
+                TaskSpec::RelativePeriodic { period, .. } => *period,
+            })
+            .collect();
 
         for spec in &scenario.tasks {
             let task = match spec {
@@ -141,251 +351,73 @@ impl SchedulerBackend for SyncopateBackend {
                     window,
                 } => TaskBuilder::every(*period, Window::new(window.early, window.late))
                     .name(name.clone())
-                    .build()
-                    .unwrap(),
-                TaskSpec::AnchoredPeriodic {
-                    name,
-                    period,
-                    offset,
-                    window,
-                } => {
-                    if let Some(off) = offset {
-                        TaskBuilder::every_with_offset(
-                            *period,
-                            *off,
-                            Window::new(window.early, window.late),
-                        )
-                        .name(name.clone())
-                        .build()
-                        .unwrap()
-                    } else {
-                        TaskBuilder::every_at_boundary(
-                            *period,
-                            Window::new(window.early, window.late),
-                        )
-                        .name(name.clone())
-                        .build()
-                        .unwrap()
-                    }
-                }
-                TaskSpec::OneShot {
-                    name,
-                    delay,
-                    window,
-                } => TaskBuilder::once_after(*delay, Window::new(window.early, window.late))
-                    .name(name.clone())
+                    .schedule(PeriodicSchedule::FixedRate)
                     .build()
                     .unwrap(),
             };
             scheduler.add_task(task).unwrap();
         }
 
-        let start = Instant::now();
-        let safety_cap = Duration::from_secs(60);
-        let mut wakeups = 0usize;
-        let mut fires = 0usize;
-        let mut misses = 0usize;
-        let mut drifts_ns = Vec::new();
+        let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+        rt.block_on(async {
+            let start = Instant::now();
+            let mut wakeups = 0usize;
+            let mut fires = 0usize;
+            let mut misses = 0usize;
+            let mut drifts_ns = Vec::new();
+            let mut last_fire: Vec<Option<Instant>> = vec![None; scenario.tasks.len()];
 
-        loop {
-            let sleep_dur = match scheduler.calculate_next_tick() {
-                Some(d) => d,
-                None => break, // all tasks exhausted
-            };
+            loop {
+                let deadline_mono = match scheduler.next_tick_deadline() {
+                    Some(d) => d,
+                    None => break,
+                };
 
-            std::thread::sleep(sleep_dur);
-            let result = scheduler.tick();
-            wakeups += 1;
+                let std_instant =
+                    epoch + Duration::from_nanos(deadline_mono.as_nanos() as u64);
+                tokio::time::sleep_until(tokio::time::Instant::from_std(std_instant))
+                    .await;
 
-            for exec in &result.fired {
-                fires += 1;
-                drifts_ns.push(exec.drift.as_nanos_signed());
-            }
-            for exec in &result.missed {
-                misses += 1;
-                drifts_ns.push(exec.drift.as_nanos_signed());
-            }
+                // Capture time immediately after wakeup — before tick() overhead.
+                let now = Instant::now();
 
-            match &scenario.termination {
-                Termination::Duration(dur) => {
-                    if start.elapsed() >= *dur {
-                        break;
-                    }
-                }
-                Termination::UntilAllFired => {
-                    if start.elapsed() >= safety_cap {
-                        break;
-                    }
-                }
-            }
-        }
+                let result = scheduler.tick();
 
-        ScenarioResult {
-            backend_name: self.name().to_string(),
-            wakeups,
-            fires,
-            misses,
-            drifts_ns,
-        }
-    }
-}
-
-// ── NaivePollingBackend ──────────────────────────────────────────────────────
-
-struct NaivePollingBackend {
-    poll_interval: Duration,
-    name: String,
-}
-
-struct NaiveTaskState {
-    period: Option<Duration>,
-    next_deadline: Duration,
-    window_late: Duration,
-    one_shot: bool,
-    fired: bool,
-}
-
-impl NaivePollingBackend {
-    fn build_task_states(scenario: &Scenario) -> Vec<NaiveTaskState> {
-        scenario
-            .tasks
-            .iter()
-            .map(|spec| match spec {
-                TaskSpec::RelativePeriodic { period, window, .. } => NaiveTaskState {
-                    period: Some(*period),
-                    next_deadline: *period,
-                    window_late: window.late,
-                    one_shot: false,
-                    fired: false,
-                },
-                // The naive backend treats anchored tasks the same as relative
-                // (elapsed-since-start). This is intentional — the comparison
-                // measures wakeup efficiency, not wall-clock alignment correctness.
-                TaskSpec::AnchoredPeriodic { period, window, .. } => NaiveTaskState {
-                    period: Some(*period),
-                    next_deadline: *period,
-                    window_late: window.late,
-                    one_shot: false,
-                    fired: false,
-                },
-                TaskSpec::OneShot { delay, window, .. } => NaiveTaskState {
-                    period: None,
-                    next_deadline: *delay,
-                    window_late: window.late,
-                    one_shot: true,
-                    fired: false,
-                },
-            })
-            .collect()
-    }
-}
-
-fn format_duration_short(d: Duration) -> String {
-    let ns = d.as_nanos();
-    if ns < 1_000 {
-        format!("{}ns", ns)
-    } else if ns < 1_000_000 {
-        let us = ns as f64 / 1_000.0;
-        if us.fract() == 0.0 {
-            format!("{}µs", us as u64)
-        } else {
-            format!("{:.1}µs", us)
-        }
-    } else if ns < 1_000_000_000 {
-        let ms = ns as f64 / 1_000_000.0;
-        if ms.fract() == 0.0 {
-            format!("{}ms", ms as u64)
-        } else {
-            format!("{:.1}ms", ms)
-        }
-    } else {
-        let s = ns as f64 / 1_000_000_000.0;
-        if s.fract() == 0.0 {
-            format!("{}s", s as u64)
-        } else {
-            format!("{:.1}s", s)
-        }
-    }
-}
-
-impl SchedulerBackend for NaivePollingBackend {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn run(&self, scenario: &Scenario) -> ScenarioResult {
-        let mut task_states = Self::build_task_states(scenario);
-        let start = Instant::now();
-        let safety_cap = Duration::from_secs(60);
-        let mut wakeups = 0usize;
-        let mut fires = 0usize;
-        let mut misses = 0usize;
-        let mut drifts_ns = Vec::new();
-
-        loop {
-            std::thread::sleep(self.poll_interval);
-            wakeups += 1;
-            let elapsed = start.elapsed();
-
-            for task in &mut task_states {
-                if task.one_shot && task.fired {
-                    continue;
-                }
-
-                let deadline = task.next_deadline;
-                let window_end = deadline + task.window_late;
-
-                if elapsed >= deadline && elapsed <= window_end {
-                    // Within window → fire
-                    let drift_ns = elapsed.as_nanos() as i128 - deadline.as_nanos() as i128;
+                wakeups += 1;
+                for (i, _exec) in result.fired.iter().enumerate() {
                     fires += 1;
+                    // Inter-fire gap drift, same metric as tokio-interval.
+                    let task_idx = i % periods.len();
+                    let expected = match last_fire[task_idx] {
+                        Some(last) => last + periods[task_idx],
+                        None => start + periods[task_idx],
+                    };
+                    let drift_ns = now.duration_since(start).as_nanos() as i128
+                        - expected.duration_since(start).as_nanos() as i128;
                     drifts_ns.push(drift_ns);
-                    if task.one_shot {
-                        task.fired = true;
-                    } else if let Some(period) = task.period {
-                        task.next_deadline = deadline + period;
+                    last_fire[task_idx] = Some(now);
+                }
+                for exec in &result.missed {
+                    misses += exec.deadlines_missed.len();
+                    for d in &exec.deadlines_missed {
+                        drifts_ns.push(d.as_nanos() as i128);
                     }
-                } else if elapsed > window_end {
-                    // Past window → miss
-                    let drift_ns = elapsed.as_nanos() as i128 - deadline.as_nanos() as i128;
-                    misses += 1;
-                    drifts_ns.push(drift_ns);
-                    if task.one_shot {
-                        task.fired = true;
-                    } else if let Some(period) = task.period {
-                        task.next_deadline = deadline + period;
-                    }
+                }
+
+                let Termination::Duration(dur) = &scenario.termination;
+                if start.elapsed() >= *dur {
+                    break;
                 }
             }
 
-            // Check termination
-            let all_one_shots_done = task_states.iter().filter(|t| t.one_shot).all(|t| t.fired);
-            let has_only_one_shots = task_states.iter().all(|t| t.one_shot);
-
-            match &scenario.termination {
-                Termination::Duration(dur) => {
-                    if elapsed >= *dur {
-                        break;
-                    }
-                }
-                Termination::UntilAllFired => {
-                    if has_only_one_shots && all_one_shots_done {
-                        break;
-                    }
-                    if elapsed >= safety_cap {
-                        break;
-                    }
-                }
+            ScenarioResult {
+                backend_name: self.name().to_string(),
+                wakeups,
+                fires,
+                misses,
+                drifts_ns,
             }
-        }
-
-        ScenarioResult {
-            backend_name: self.name().to_string(),
-            wakeups,
-            fires,
-            misses,
-            drifts_ns,
-        }
+        })
     }
 }
 
@@ -393,91 +425,114 @@ impl SchedulerBackend for NaivePollingBackend {
 
 fn build_scenarios(scale: f64) -> Vec<Scenario> {
     let scale_termination = |t: Termination| -> Termination {
-        match t {
-            Termination::Duration(d) => {
-                Termination::Duration(Duration::from_secs_f64(d.as_secs_f64() * scale))
-            }
-            other => other,
+        let Termination::Duration(d) = t;
+        Termination::Duration(Duration::from_secs_f64(d.as_secs_f64() * scale))
+    };
+
+    let w5 = WindowSpec {
+        early: Duration::from_millis(5),
+        late: Duration::from_millis(10),
+    };
+
+    let dur3s = |s: &str| -> Scenario {
+        Scenario {
+            name: s.to_string(),
+            tasks: Vec::new(),
+            termination: scale_termination(Termination::Duration(Duration::from_secs(3))),
         }
     };
 
-    let w50 = WindowSpec {
-        early: Duration::from_millis(50),
-        late: Duration::from_millis(50),
-    };
-
     vec![
+        // 1. Single 100ms — baseline, both backends identical
         Scenario {
-            name: "Single Relative (1s period, 30s)".to_string(),
             tasks: vec![TaskSpec::RelativePeriodic {
-                name: "rel_1s".to_string(),
-                period: Duration::from_secs(1),
-                window: w50.clone(),
+                name: "rel_100ms".into(),
+                period: Duration::from_millis(100),
+                window: w5.clone(),
             }],
-            termination: scale_termination(Termination::Duration(Duration::from_secs(30))),
+            ..dur3s("Single 100ms")
         },
+        // 2. Single 16ms (~60fps) — baseline at high frequency
         Scenario {
-            name: "Single Anchored (1s period, 30s)".to_string(),
-            tasks: vec![TaskSpec::AnchoredPeriodic {
-                name: "anch_1s".to_string(),
-                period: Duration::from_secs(1),
-                offset: None,
-                window: w50.clone(),
+            tasks: vec![TaskSpec::RelativePeriodic {
+                name: "rel_16ms".into(),
+                period: Duration::from_millis(16),
+                window: w5.clone(),
             }],
-            termination: scale_termination(Termination::Duration(Duration::from_secs(30))),
+            ..dur3s("Single 16ms")
         },
+        // 3. 3 near periods
         Scenario {
-            name: "One-Shot (5s)".to_string(),
-            tasks: vec![TaskSpec::OneShot {
-                name: "once_5s".to_string(),
-                delay: Duration::from_secs(5),
-                window: w50.clone(),
-            }],
-            termination: Termination::UntilAllFired,
-        },
-        Scenario {
-            name: "Mixed (30s)".to_string(),
             tasks: vec![
                 TaskSpec::RelativePeriodic {
-                    name: "rel_500ms".to_string(),
-                    period: Duration::from_millis(500),
-                    window: w50.clone(),
+                    name: "rel_97ms".into(),
+                    period: Duration::from_millis(97),
+                    window: w5.clone(),
                 },
                 TaskSpec::RelativePeriodic {
-                    name: "rel_1s".to_string(),
-                    period: Duration::from_secs(1),
-                    window: w50.clone(),
+                    name: "rel_100ms".into(),
+                    period: Duration::from_millis(100),
+                    window: w5.clone(),
                 },
                 TaskSpec::RelativePeriodic {
-                    name: "rel_2s".to_string(),
-                    period: Duration::from_secs(2),
-                    window: w50.clone(),
+                    name: "rel_103ms".into(),
+                    period: Duration::from_millis(103),
+                    window: w5.clone(),
                 },
             ],
-            termination: scale_termination(Termination::Duration(Duration::from_secs(30))),
+            ..dur3s("3 Near Periods")
+        },
+        // 4. 5 clustered
+        Scenario {
+            tasks: vec![
+                TaskSpec::RelativePeriodic {
+                    name: "rel_95ms".into(),
+                    period: Duration::from_millis(95),
+                    window: w5.clone(),
+                },
+                TaskSpec::RelativePeriodic {
+                    name: "rel_98ms".into(),
+                    period: Duration::from_millis(98),
+                    window: w5.clone(),
+                },
+                TaskSpec::RelativePeriodic {
+                    name: "rel_100ms".into(),
+                    period: Duration::from_millis(100),
+                    window: w5.clone(),
+                },
+                TaskSpec::RelativePeriodic {
+                    name: "rel_102ms".into(),
+                    period: Duration::from_millis(102),
+                    window: w5.clone(),
+                },
+                TaskSpec::RelativePeriodic {
+                    name: "rel_105ms".into(),
+                    period: Duration::from_millis(105),
+                    window: w5.clone(),
+                },
+            ],
+            ..dur3s("5 Clustered")
+        },
+        // 5. Non-overlapping — control
+        Scenario {
+            tasks: vec![
+                TaskSpec::RelativePeriodic {
+                    name: "rel_50ms".into(),
+                    period: Duration::from_millis(50),
+                    window: w5.clone(),
+                },
+                TaskSpec::RelativePeriodic {
+                    name: "rel_150ms".into(),
+                    period: Duration::from_millis(150),
+                    window: w5.clone(),
+                },
+            ],
+            ..dur3s("Non-overlapping")
         },
     ]
 }
 
 // ── Formatting helpers ───────────────────────────────────────────────────────
-
-#[allow(dead_code)]
-fn format_drift_ns(ns: i128) -> String {
-    if ns == 0 {
-        return "0ns".to_string();
-    }
-    let sign = if ns < 0 { "-" } else { "+" };
-    let abs = ns.unsigned_abs();
-    if abs < 1_000 {
-        format!("{}{}ns", sign, abs)
-    } else if abs < 1_000_000 {
-        format!("{}{:.1}µs", sign, abs as f64 / 1_000.0)
-    } else if abs < 1_000_000_000 {
-        format!("{}{:.1}ms", sign, abs as f64 / 1_000_000.0)
-    } else {
-        format!("{}{:.3}s", sign, abs as f64 / 1_000_000_000.0)
-    }
-}
 
 fn format_drift_f64(ns: f64) -> String {
     if ns == 0.0 {
@@ -497,59 +552,33 @@ fn format_drift_f64(ns: f64) -> String {
 
 // ── Output ───────────────────────────────────────────────────────────────────
 
-fn print_scenario_results(scenario: &Scenario, results: &[ScenarioResult]) {
-    println!("\n=== Scenario: {} ===\n", scenario.name);
-
+fn print_scenario_results(results: &[ScenarioResult]) {
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
 
-    let mut header = vec!["Metric".to_string()];
-    for r in results {
-        header.push(r.backend_name.clone());
-    }
-    table.set_header(header);
+    table.set_header(vec![
+        "Backend",
+        "Wakeups",
+        "Fires",
+        "Misses",
+        "Fires/wakeup",
+        "Drift avg",
+        "Drift p95",
+        "Drift max",
+    ]);
 
-    // Wakeups
-    let mut row = vec!["Wakeups".to_string()];
     for r in results {
-        row.push(r.wakeups.to_string());
+        table.add_row(vec![
+            r.backend_name.clone(),
+            r.wakeups.to_string(),
+            r.fires.to_string(),
+            r.misses.to_string(),
+            format!("{:.1}", r.fires_per_wakeup()),
+            format_drift_f64(r.drift_avg()),
+            format_drift_f64(r.drift_p95()),
+            format_drift_f64(r.drift_max()),
+        ]);
     }
-    table.add_row(row);
-
-    // Fires
-    let mut row = vec!["Fires".to_string()];
-    for r in results {
-        row.push(r.fires.to_string());
-    }
-    table.add_row(row);
-
-    // Misses
-    let mut row = vec!["Misses".to_string()];
-    for r in results {
-        row.push(r.misses.to_string());
-    }
-    table.add_row(row);
-
-    // Drift max
-    let mut row = vec!["Drift max".to_string()];
-    for r in results {
-        row.push(format_drift_f64(r.drift_max()));
-    }
-    table.add_row(row);
-
-    // Drift avg
-    let mut row = vec!["Drift avg".to_string()];
-    for r in results {
-        row.push(format_drift_f64(r.drift_avg()));
-    }
-    table.add_row(row);
-
-    // Drift p95
-    let mut row = vec!["Drift p95".to_string()];
-    for r in results {
-        row.push(format_drift_f64(r.drift_p95()));
-    }
-    table.add_row(row);
 
     println!("{table}");
 }
@@ -560,12 +589,17 @@ fn main() {
     let args = Args::parse();
 
     let scenarios = build_scenarios(args.scale);
+
     let backends: Vec<Box<dyn SchedulerBackend>> = vec![
-        Box::new(SyncopateBackend),
-        Box::new({
-            let poll_interval = Duration::from_nanos(args.naive_poll_ns);
-            let name = format!("naive ({})", format_duration_short(poll_interval));
-            NaivePollingBackend { poll_interval, name }
+        Box::new(TokioIntervalBackend),
+        Box::new(RealTokioBackend),
+        Box::new(SyncopateBackend {
+            timer_delay: Duration::ZERO,
+            label: "syncopate",
+        }),
+        Box::new(SyncopateBackend {
+            timer_delay: Duration::from_millis(5),
+            label: "syncopate+5ms",
         }),
     ];
 
@@ -604,19 +638,16 @@ fn main() {
     );
 
     for scenario in &filtered_scenarios {
-        let mut results = Vec::new();
+        println!("\n=== {} ===\n", scenario.name);
 
+        let mut results = Vec::new();
         for backend in &filtered_backends {
-            eprint!(
-                "  Running {:30} with {:15}...",
-                scenario.name,
-                backend.name()
-            );
+            eprint!("  {:15} ...", backend.name());
             let result = backend.run(scenario);
-            eprintln!(" done ({} wakeups, {} fires)", result.wakeups, result.fires);
+            eprintln!(" {} wakeups, {} fires", result.wakeups, result.fires);
             results.push(result);
         }
 
-        print_scenario_results(scenario, &results);
+        print_scenario_results(&results);
     }
 }

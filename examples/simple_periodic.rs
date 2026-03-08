@@ -179,11 +179,12 @@ fn run_loop<C: Clock>(
             + tick_result
                 .missed
                 .iter()
-                .map(|e| e.drift.as_nanos_signed())
+                .flat_map(|e| &e.deadlines_missed)
+                .map(|d| d.as_nanos() as i128)
                 .sum::<i128>();
         cumulative_drift += tick_drift;
         let tasks_executed = format_tasks(tick_result.fired.iter());
-        let tasks_missed = format_tasks(tick_result.missed.iter());
+        let tasks_missed = format_missed_tasks(tick_result.missed.iter());
         drop(tick_result);
 
         let row = TickRow {
@@ -215,6 +216,22 @@ fn format_tasks<'a, Ctx: 'a>(
         .map(|e| {
             let name = e.task.name.as_deref().unwrap_or("unnamed");
             format!("{} ({})", name, e.drift)
+        })
+        .collect();
+    if v.is_empty() {
+        "none".to_string()
+    } else {
+        v.join(", ")
+    }
+}
+
+fn format_missed_tasks<'a, Ctx: 'a>(
+    iter: impl Iterator<Item = &'a syncopate::MissedExecution<'a, Ctx>>,
+) -> String {
+    let v: Vec<String> = iter
+        .map(|e| {
+            let name = e.task.name.as_deref().unwrap_or("unnamed");
+            format!("{} ({} missed)", name, e.deadlines_missed.len())
         })
         .collect();
     if v.is_empty() {

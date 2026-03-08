@@ -2,5 +2,5 @@ pub mod scheduler;
 pub mod system_time;
 pub mod task;
 
-pub use scheduler::{TaskExecution, TickResult};
-pub use task::{PeriodicSchedule, Repeat, Window};
+pub use scheduler::{MissedExecution, TaskExecution, TickResult};
+pub use task::{Drift, PeriodicSchedule, Repeat, Window};

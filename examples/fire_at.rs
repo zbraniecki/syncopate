@@ -72,10 +72,10 @@ fn main() {
         for exec in &result.missed {
             let name = exec.task.name.as_deref().unwrap_or("unnamed");
             println!(
-                "Missed: {} at {} (drift: {})",
+                "Missed: {} at {} ({} deadlines missed)",
                 name,
                 Zoned::now().strftime("%H:%M:%S%.3f"),
-                exec.drift,
+                exec.deadlines_missed.len(),
             );
         }
     }

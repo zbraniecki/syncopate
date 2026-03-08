@@ -144,8 +144,8 @@ fn task_missed_when_past_late_window() {
     assert_eq!(result.fired.len(), 0);
     assert_eq!(result.missed.len(), 1);
     assert_eq!(
-        result.missed[0].drift,
-        Drift::Late(Duration::from_millis(50))
+        result.missed[0].deadlines_missed,
+        vec![Duration::from_millis(50)]
     );
 }
 
