@@ -2,10 +2,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use clap::{Parser, ValueEnum};
-use syncopate::scheduler::Scheduler;
-use syncopate::system_time::SimClock;
-use syncopate::task::{TaskBuilder, Window};
-use syncopate::{InitialTick, MissedTickBehavior, PeriodicSchedule};
+use syncopate::{MissedTickBehavior, PeriodicSchedule, Scheduler, SimClock, TaskBuilder, Window};
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -18,11 +15,11 @@ TASK FORMAT:
     period=<dur>        Firing period (required)
     window=<dur>        Symmetric window tolerance (default: 0ns)
     delay=<dur>         Initial delay before adding task to scheduler (default: 0ns)
-    type=<type>         relative | anchored (default: relative)
+    type=<type>         relative | absolute (default: relative)
     initial=<mode>      immediate | delay — fire immediately or after first period (default: immediate, relative only)
     schedule=<sched>    fixed-rate | fixed-delay (default: fixed-rate, relative only)
-    offset=<dur>        Wall-clock offset for anchored tasks (anchored only)
-    miss=<behavior>     skip | execute | burst | burst:<max> (default: skip)
+    offset=<dur>        Wall-clock offset for absolute tasks (absolute only)
+    miss=<behavior>     skip | run-latest | burst | burst:<max> (default: skip)
 
 DISRUPTION FORMAT:
   Comma-separated key=value pairs. Keys:
@@ -226,10 +223,10 @@ struct Scenario {
 
 enum ScenarioTaskKind {
     Relative {
-        initial_tick: InitialTick,
+        initial_delay: Duration,
         schedule: PeriodicSchedule,
     },
-    Anchored {
+    Absolute {
         offset: Option<Duration>,
     },
 }
@@ -271,7 +268,7 @@ fn parse_task_spec(spec: &str) -> Result<ScenarioTask, String> {
     let mut period = None;
     let mut window = Duration::ZERO;
     let mut delay = Duration::ZERO;
-    let mut initial_tick = None;
+    let mut initial_delay = None;
     let mut schedule = None;
     let mut on_miss = MissedTickBehavior::Skip;
     let mut task_type: Option<String> = None;
@@ -291,9 +288,12 @@ fn parse_task_spec(spec: &str) -> Result<ScenarioTask, String> {
             "type" => task_type = Some(value.to_string()),
             "offset" => offset = Some(parse_duration(value)?),
             "initial" => {
-                initial_tick = Some(match value {
-                    "immediate" => InitialTick::Immediate,
-                    "delay" => InitialTick::Delay,
+                initial_delay = Some(match value {
+                    "immediate" => Duration::ZERO,
+                    "delay" => {
+                        // Will be resolved to period below once we know it
+                        Duration::MAX
+                    }
                     _ => {
                         return Err(format!(
                             "unknown initial mode '{value}' (expected immediate or delay)"
@@ -322,31 +322,39 @@ fn parse_task_spec(spec: &str) -> Result<ScenarioTask, String> {
     let name = name.ok_or("task missing required 'name' key")?;
     let period = period.ok_or("task missing required 'period' key")?;
 
-    let is_anchored = task_type.as_deref() == Some("anchored");
+    // Resolve "delay" sentinel to actual period
+    let initial_delay = match initial_delay {
+        Some(d) if d == Duration::MAX => period,
+        Some(d) => d,
+        None => Duration::ZERO,
+    };
 
-    if is_anchored {
-        if initial_tick.is_some() {
-            return Err("'initial' is not supported for anchored tasks".into());
+    let is_absolute = task_type.as_deref() == Some("anchored")
+        || task_type.as_deref() == Some("absolute");
+
+    if is_absolute {
+        if initial_delay != Duration::ZERO {
+            return Err("'initial' is not supported for absolute tasks".into());
         }
         if schedule.is_some() {
-            return Err("'schedule' is not supported for anchored tasks".into());
+            return Err("'schedule' is not supported for absolute tasks".into());
         }
     } else if task_type.is_none() || task_type.as_deref() == Some("relative") {
         if offset.is_some() {
-            return Err("'offset' is only supported for anchored tasks".into());
+            return Err("'offset' is only supported for absolute tasks".into());
         }
     } else {
         return Err(format!(
-            "unknown type '{}' (expected relative or anchored)",
+            "unknown type '{}' (expected relative or absolute)",
             task_type.unwrap()
         ));
     }
 
-    let kind = if is_anchored {
-        ScenarioTaskKind::Anchored { offset }
+    let kind = if is_absolute {
+        ScenarioTaskKind::Absolute { offset }
     } else {
         ScenarioTaskKind::Relative {
-            initial_tick: initial_tick.unwrap_or_default(),
+            initial_delay,
             schedule: schedule.unwrap_or(PeriodicSchedule::FixedRate),
         }
     };
@@ -364,7 +372,7 @@ fn parse_task_spec(spec: &str) -> Result<ScenarioTask, String> {
 fn parse_miss_behavior(s: &str) -> Result<MissedTickBehavior, String> {
     match s {
         "skip" => Ok(MissedTickBehavior::Skip),
-        "execute" => Ok(MissedTickBehavior::Execute),
+        "execute" | "run-latest" => Ok(MissedTickBehavior::RunLatest),
         "burst" => Ok(MissedTickBehavior::Burst { max: None }),
         _ if s.starts_with("burst:") => {
             let max: u32 = s[6..]
@@ -416,7 +424,7 @@ fn get_preset(name: &str) -> Scenario {
                     window: Duration::from_millis(50),
                     delay: Duration::ZERO,
                     kind: ScenarioTaskKind::Relative {
-                        initial_tick: InitialTick::default(),
+                        initial_delay: Duration::ZERO,
                         schedule: PeriodicSchedule::FixedRate,
                     },
                     on_miss: MissedTickBehavior::Skip,
@@ -427,7 +435,7 @@ fn get_preset(name: &str) -> Scenario {
                     window: Duration::from_millis(50),
                     delay: Duration::ZERO,
                     kind: ScenarioTaskKind::Relative {
-                        initial_tick: InitialTick::default(),
+                        initial_delay: Duration::ZERO,
                         schedule: PeriodicSchedule::FixedRate,
                     },
                     on_miss: MissedTickBehavior::Skip,
@@ -452,7 +460,7 @@ fn get_preset(name: &str) -> Scenario {
                     window: Duration::from_millis(50),
                     delay: Duration::ZERO,
                     kind: ScenarioTaskKind::Relative {
-                        initial_tick: InitialTick::default(),
+                        initial_delay: Duration::ZERO,
                         schedule: PeriodicSchedule::FixedRate,
                     },
                     on_miss: MissedTickBehavior::Burst { max: None },
@@ -463,7 +471,7 @@ fn get_preset(name: &str) -> Scenario {
                     window: Duration::from_millis(50),
                     delay: Duration::ZERO,
                     kind: ScenarioTaskKind::Relative {
-                        initial_tick: InitialTick::default(),
+                        initial_delay: Duration::ZERO,
                         schedule: PeriodicSchedule::FixedRate,
                     },
                     on_miss: MissedTickBehavior::Burst { max: None },
@@ -487,7 +495,7 @@ fn get_preset(name: &str) -> Scenario {
                     window: Duration::from_millis(30),
                     delay: Duration::ZERO,
                     kind: ScenarioTaskKind::Relative {
-                        initial_tick: InitialTick::default(),
+                        initial_delay: Duration::ZERO,
                         schedule: PeriodicSchedule::FixedRate,
                     },
                     on_miss: MissedTickBehavior::Skip,
@@ -498,7 +506,7 @@ fn get_preset(name: &str) -> Scenario {
                     window: Duration::from_millis(50),
                     delay: Duration::ZERO,
                     kind: ScenarioTaskKind::Relative {
-                        initial_tick: InitialTick::default(),
+                        initial_delay: Duration::ZERO,
                         schedule: PeriodicSchedule::FixedRate,
                     },
                     on_miss: MissedTickBehavior::Skip,
@@ -509,10 +517,10 @@ fn get_preset(name: &str) -> Scenario {
                     window: Duration::from_millis(50),
                     delay: Duration::ZERO,
                     kind: ScenarioTaskKind::Relative {
-                        initial_tick: InitialTick::default(),
+                        initial_delay: Duration::ZERO,
                         schedule: PeriodicSchedule::FixedRate,
                     },
-                    on_miss: MissedTickBehavior::Execute,
+                    on_miss: MissedTickBehavior::RunLatest,
                 },
             ],
             disruptions: vec![
@@ -801,24 +809,27 @@ fn record_tick(result: &syncopate::TickResult<'_>, at_nanos: u64, events: &mut V
     }
 }
 
-fn add_scenario_task<C: syncopate::system_time::Clock>(
+fn add_scenario_task<C: syncopate::Clock>(
     scheduler: &mut Scheduler<(), C>,
     st: &ScenarioTask,
 ) {
     let window = Window::symmetric(st.window);
     let builder = match &st.kind {
         ScenarioTaskKind::Relative {
-            initial_tick,
+            initial_delay,
             schedule,
-        } => TaskBuilder::every(st.period, window)
-            .initial_tick(*initial_tick)
+        } => TaskBuilder::every(st.period)
+            .window(window)
+            .initial_delay(*initial_delay)
             .schedule(*schedule),
-        ScenarioTaskKind::Anchored { offset: None } => {
-            TaskBuilder::every_at_boundary(st.period, window)
+        ScenarioTaskKind::Absolute { offset: None } => {
+            TaskBuilder::every_absolute(st.period).window(window)
         }
-        ScenarioTaskKind::Anchored {
+        ScenarioTaskKind::Absolute {
             offset: Some(offset),
-        } => TaskBuilder::every_with_offset(st.period, *offset, window),
+        } => TaskBuilder::every_absolute(st.period)
+            .offset(*offset)
+            .window(window),
     };
     let task = builder.name(&st.name).on_miss(st.on_miss).build().unwrap();
     scheduler.add_task(task).unwrap();
@@ -829,10 +840,10 @@ fn add_scenario_task<C: syncopate::system_time::Clock>(
 fn task_label(task: &ScenarioTask) -> String {
     let kind_suffix = match &task.kind {
         ScenarioTaskKind::Relative { .. } => String::new(),
-        ScenarioTaskKind::Anchored { offset: None } => " [anchored]".into(),
-        ScenarioTaskKind::Anchored {
+        ScenarioTaskKind::Absolute { offset: None } => " [absolute]".into(),
+        ScenarioTaskKind::Absolute {
             offset: Some(offset),
-        } => format!(" [anchored+{}]", fmt_duration(*offset)),
+        } => format!(" [absolute+{}]", fmt_duration(*offset)),
     };
     if task.delay.is_zero() {
         format!("{} ({}){}", task.name, fmt_duration(task.period), kind_suffix)
@@ -1156,16 +1167,17 @@ fn pick_ruler_interval(duration_nanos: u64) -> u64 {
 fn has_ideal_deadline_relative(
     period_nanos: u64,
     delay_nanos: u64,
-    initial_tick: InitialTick,
+    initial_delay_nanos: u64,
     col_start: u64,
     col_end: u64,
 ) -> bool {
     if period_nanos == 0 {
         return false;
     }
-    let first_deadline = match initial_tick {
-        InitialTick::Immediate => delay_nanos,
-        InitialTick::Delay => delay_nanos + period_nanos,
+    let first_deadline = if initial_delay_nanos == 0 {
+        delay_nanos
+    } else {
+        delay_nanos + initial_delay_nanos
     };
     if col_end <= first_deadline {
         return false;
@@ -1227,10 +1239,10 @@ fn has_ideal_deadline_for_task(task: &ScenarioTask, wall_clock_offset: Duration,
     let delay_nanos = task.delay.as_nanos() as u64;
     match &task.kind {
         ScenarioTaskKind::Relative {
-            initial_tick,
+            initial_delay,
             schedule: _,
-        } => has_ideal_deadline_relative(period_nanos, delay_nanos, *initial_tick, col_start, col_end),
-        ScenarioTaskKind::Anchored { offset } => {
+        } => has_ideal_deadline_relative(period_nanos, delay_nanos, initial_delay.as_nanos() as u64, col_start, col_end),
+        ScenarioTaskKind::Absolute { offset } => {
             let offset_nanos = offset.map_or(0, |o| o.as_nanos() as u64);
             has_ideal_deadline_anchored(period_nanos, offset_nanos, delay_nanos, wall_clock_offset.as_nanos() as u64, col_start, col_end)
         }

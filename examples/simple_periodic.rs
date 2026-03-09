@@ -3,10 +3,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use jiff::Zoned;
-use syncopate::PeriodicSchedule;
-use syncopate::scheduler::Scheduler;
-use syncopate::system_time::{Clock, SimClock};
-use syncopate::task::{TaskBuilder, Window};
+use syncopate::{Clock, PeriodicSchedule, Scheduler, SimClock, TaskBuilder, Window};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -96,14 +93,12 @@ fn main() {
 // ── Shared setup ──────────────────────────────────────────────────────────────
 
 fn add_tasks<C: Clock>(scheduler: &mut Scheduler<(), C>, schedule: PeriodicSchedule) {
-    let task = TaskBuilder::every(
-        Duration::from_millis(500),
-        Window::symmetric(Duration::from_millis(100)),
-    )
-    .name("every_500ms")
-    .schedule(schedule)
-    .build()
-    .unwrap();
+    let task = TaskBuilder::every(Duration::from_millis(500))
+        .window(Window::symmetric(Duration::from_millis(100)))
+        .name("every_500ms")
+        .schedule(schedule)
+        .build()
+        .unwrap();
 
     scheduler.add_task(task).unwrap();
     println!("Task added: every_500ms (period: 500ms, window: ±100ms)");

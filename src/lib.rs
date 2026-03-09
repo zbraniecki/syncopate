@@ -1,6 +1,7 @@
+pub mod clock;
 pub mod scheduler;
-pub mod system_time;
 pub mod task;
 
-pub use scheduler::{MissedExecution, TaskExecution, TickResult};
-pub use task::{Drift, InitialTick, MissedTickBehavior, PeriodicSchedule, Repeat, Window};
+pub use clock::{Clock, MonoInstant, RealClock, SimClock, TimeReference, WallInstant};
+pub use scheduler::{AddTaskError, MissedExecution, Scheduler, TaskExecution, TickResult};
+pub use task::{Drift, MissedTickBehavior, PeriodicSchedule, Repeat, TaskBuildError, TaskBuilder, Window};

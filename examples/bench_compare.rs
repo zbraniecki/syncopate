@@ -2,8 +2,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use comfy_table::{Table, presets::UTF8_FULL};
-use syncopate::scheduler::Scheduler;
-use syncopate::task::{PeriodicSchedule, TaskBuilder, Window};
+use syncopate::{PeriodicSchedule, Scheduler, TaskBuilder, Window};
 use tokio::sync::mpsc;
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
@@ -255,7 +254,8 @@ impl SchedulerBackend for SyncopateBackend {
                     name,
                     period,
                     window,
-                } => TaskBuilder::every(*period, Window::new(window.early, window.late))
+                } => TaskBuilder::every(*period)
+                    .window(Window::new(window.early, window.late))
                     .name(name.clone())
                     .schedule(PeriodicSchedule::FixedRate)
                     .build()

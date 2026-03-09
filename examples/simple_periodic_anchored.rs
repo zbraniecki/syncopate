@@ -3,9 +3,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use jiff::Zoned;
-use syncopate::scheduler::Scheduler;
-use syncopate::system_time::{Clock, SimClock};
-use syncopate::task::{TaskBuilder, Window};
+use syncopate::{Clock, Scheduler, SimClock, TaskBuilder, Window};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -81,13 +79,11 @@ fn main() {
 // ── Shared setup ──────────────────────────────────────────────────────────────
 
 fn add_tasks<C: Clock>(scheduler: &mut Scheduler<(), C>) {
-    let task = TaskBuilder::every_at_boundary(
-        Duration::from_millis(500),
-        Window::symmetric(Duration::from_millis(100)),
-    )
-    .name("every_500ms")
-    .build()
-    .unwrap();
+    let task = TaskBuilder::every_absolute(Duration::from_millis(500))
+        .window(Window::symmetric(Duration::from_millis(100)))
+        .name("every_500ms")
+        .build()
+        .unwrap();
 
     scheduler.add_task(task).unwrap();
     println!("Task added: every_500ms (period: 500ms, window: ±100ms, wall-clock anchored)");

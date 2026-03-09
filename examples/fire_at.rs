@@ -2,8 +2,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use jiff::Zoned;
-use syncopate::scheduler::Scheduler;
-use syncopate::task::{TaskBuilder, Window};
+use syncopate::{Scheduler, TaskBuilder, Window};
 
 #[derive(Parser, Debug)]
 #[command(about = "Schedule a one-shot task that fires at a specific time or after a delay")]
@@ -38,7 +37,8 @@ fn main() {
     let mut scheduler: Scheduler = Scheduler::new();
     scheduler.set_timer_delay(Duration::from_millis(5));
 
-    let task = TaskBuilder::once_after(delay, Window::symmetric(Duration::from_millis(50)))
+    let task = TaskBuilder::once_after(delay)
+        .window(Window::symmetric(Duration::from_millis(50)))
         .name("fire_at")
         .build()
         .unwrap();
