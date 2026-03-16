@@ -670,7 +670,13 @@ fn simulate(scenario: &Scenario) -> SimResult {
         while let Some(&(delay, _)) = pending_tasks.first() {
             if delay <= current_nanos {
                 let (_, st) = pending_tasks.remove(0);
-                add_scenario_task(&mut scheduler, st);
+                if add_scenario_task(&mut scheduler, st).is_some() {
+                    events.push(SimEvent {
+                        at_nanos: current_nanos,
+                        task_name: st.name.clone(),
+                        kind: EventKind::Fired,
+                    });
+                }
             } else {
                 break;
             }
@@ -720,7 +726,13 @@ fn simulate(scenario: &Scenario) -> SimResult {
                     clock.advance(Duration::from_nanos(step));
                     current_nanos = delay;
                     let (_, st) = pending_tasks.remove(0);
-                    add_scenario_task(&mut scheduler, st);
+                    if add_scenario_task(&mut scheduler, st).is_some() {
+                        events.push(SimEvent {
+                            at_nanos: current_nanos,
+                            task_name: st.name.clone(),
+                            kind: EventKind::Fired,
+                        });
+                    }
                 } else {
                     break;
                 }
@@ -805,7 +817,14 @@ async fn simulate_real(scenario: &Scenario) -> SimResult {
         while let Some(&(delay, _)) = pending_tasks.first() {
             if delay <= elapsed_nanos {
                 let (_, st) = pending_tasks.remove(0);
-                add_scenario_task(&mut scheduler, st);
+                if add_scenario_task(&mut scheduler, st).is_some() {
+                    let at = start.elapsed().as_nanos() as u64;
+                    events.push(SimEvent {
+                        at_nanos: at,
+                        task_name: st.name.clone(),
+                        kind: EventKind::Fired,
+                    });
+                }
             } else {
                 break;
             }
@@ -854,7 +873,10 @@ fn record_tick(result: &syncopate::TickResult<'_>, at_nanos: u64, events: &mut V
     }
 }
 
-fn add_scenario_task<C: syncopate::Clock>(scheduler: &mut Scheduler<(), C>, st: &ScenarioTask) {
+fn add_scenario_task<C: syncopate::Clock>(
+    scheduler: &mut Scheduler<(), C>,
+    st: &ScenarioTask,
+) -> Option<syncopate::Drift> {
     let window = Window::symmetric(st.window);
     let builder = match &st.kind {
         ScenarioTaskKind::Relative {
@@ -874,7 +896,7 @@ fn add_scenario_task<C: syncopate::Clock>(scheduler: &mut Scheduler<(), C>, st: 
             .window(window),
     };
     let task = builder.name(&st.name).on_miss(st.on_miss).build().unwrap();
-    scheduler.add_task(task).unwrap();
+    scheduler.add_task(task).unwrap()
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────────
@@ -1113,13 +1135,38 @@ fn print_ruler(label_width: usize, cols: usize, res_nanos: u64, duration_nanos: 
     println!("{}", String::from_utf8_lossy(&tick_line));
 }
 
-/// Format a wall-clock duration as HH:MM:SS.
-fn fmt_wall_clock(d: Duration) -> String {
+/// Format a wall-clock duration as HH:MM:SS with adaptive sub-second precision.
+///
+/// The precision is determined by `ruler_interval_nanos`:
+/// - Whole seconds → `HH:MM:SS`
+/// - Whole milliseconds → `HH:MM:SS.mmm`
+/// - Whole microseconds → `HH:MM:SS.mmm_uuu`
+/// - Otherwise → `HH:MM:SS.mmm_uuu_nnn`
+fn fmt_wall_clock(d: Duration, ruler_interval_nanos: u64) -> String {
     let total_secs = d.as_secs();
     let hours = total_secs / 3600;
     let mins = (total_secs % 3600) / 60;
     let secs = total_secs % 60;
-    format!("{:02}:{:02}:{:02}", hours, mins, secs)
+    let subsec_nanos = d.subsec_nanos();
+
+    if ruler_interval_nanos % 1_000_000_000 == 0 {
+        format!("{:02}:{:02}:{:02}", hours, mins, secs)
+    } else if ruler_interval_nanos % 1_000_000 == 0 {
+        let ms = subsec_nanos / 1_000_000;
+        format!("{:02}:{:02}:{:02}.{:03}", hours, mins, secs, ms)
+    } else if ruler_interval_nanos % 1_000 == 0 {
+        let ms = subsec_nanos / 1_000_000;
+        let us = (subsec_nanos % 1_000_000) / 1_000;
+        format!("{:02}:{:02}:{:02}.{:03}_{:03}", hours, mins, secs, ms, us)
+    } else {
+        let ms = subsec_nanos / 1_000_000;
+        let us = (subsec_nanos % 1_000_000) / 1_000;
+        let ns = subsec_nanos % 1_000;
+        format!(
+            "{:02}:{:02}:{:02}.{:03}_{:03}_{:03}",
+            hours, mins, secs, ms, us, ns
+        )
+    }
 }
 
 fn print_clock_ruler(
@@ -1143,7 +1190,7 @@ fn print_clock_ruler(
         (offset_nanos / ruler_interval + 1) * ruler_interval
     };
 
-    let final_label = fmt_wall_clock(Duration::from_nanos(end_nanos));
+    let final_label = fmt_wall_clock(Duration::from_nanos(end_nanos), ruler_interval);
     let buf_len = cols + 1 + final_label.len();
     let mut num_line = vec![b' '; buf_len];
     let mut tick_line = vec![b' '; buf_len];
@@ -1155,7 +1202,7 @@ fn print_clock_ruler(
         let col = (rel_nanos / res_nanos) as usize;
         if col <= cols {
             tick_line[col] = b'|';
-            let label = fmt_wall_clock(Duration::from_nanos(wall_tick));
+            let label = fmt_wall_clock(Duration::from_nanos(wall_tick), ruler_interval);
             let label_bytes = label.as_bytes();
             if col + label_bytes.len() <= buf_len {
                 num_line[col..col + label_bytes.len()].copy_from_slice(label_bytes);

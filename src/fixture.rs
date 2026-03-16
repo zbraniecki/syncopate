@@ -263,11 +263,7 @@ fn auto_duration(input: &ScenarioInput) -> u64 {
         .max()
         .unwrap_or(500_000_000);
 
-    let combined_period = input
-        .tasks
-        .iter()
-        .map(|t| t.period_ns)
-        .fold(1u64, lcm);
+    let combined_period = input.tasks.iter().map(|t| t.period_ns).fold(1u64, lcm);
 
     let cap = longest_period.saturating_mul(10);
     let base = combined_period.saturating_mul(2).min(cap);
