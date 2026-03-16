@@ -73,23 +73,31 @@ pub struct DisruptionDef {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(crate = "serde_crate")]
 pub struct ScenarioOutput {
-    pub events: Vec<EventDef>,
-    pub tick_times_ns: Vec<u64>,
+    pub ticks: Vec<TickDef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(crate = "serde_crate")]
-pub struct EventDef {
+pub struct TickDef {
     pub at_ns: u64,
-    pub task_name: String,
-    pub kind: EventKindDef,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fired: Vec<FiredDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missed: Vec<MissedDef>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(crate = "serde_crate")]
-pub enum EventKindDef {
-    Fired,
-    Missed,
+pub struct FiredDef {
+    pub task_name: String,
+    pub drift_ns: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(crate = "serde_crate")]
+pub struct MissedDef {
+    pub task_name: String,
+    pub deadlines_missed_ns: Vec<u64>,
 }
 
 // ── Replay engine ────────────────────────────────────────────────────────────
@@ -125,13 +133,11 @@ pub fn replay(input: &ScenarioInput) -> ScenarioOutput {
 
     let duration_ns = input.duration_ns.unwrap_or_else(|| auto_duration(input));
 
-    let mut events = Vec::new();
-    let mut tick_times_ns = Vec::new();
+    let mut ticks = Vec::new();
     let mut current_ns: u64 = 0;
 
     // Tick at t=0.
-    tick_times_ns.push(current_ns);
-    record_tick(&scheduler.tick(), current_ns, &mut events);
+    record_tick(&scheduler.tick(), current_ns, &mut ticks);
 
     let mut disruptions: Vec<&DisruptionDef> = input.disruptions.iter().collect();
     disruptions.sort_by_key(|d| d.at_ns);
@@ -145,8 +151,7 @@ pub fn replay(input: &ScenarioInput) -> ScenarioOutput {
                 next_disruption += 1;
                 clock.advance(Duration::from_nanos(d.duration_ns));
                 current_ns += d.duration_ns;
-                tick_times_ns.push(current_ns);
-                record_tick(&scheduler.tick(), current_ns, &mut events);
+                record_tick(&scheduler.tick(), current_ns, &mut ticks);
                 continue;
             }
         }
@@ -213,15 +218,11 @@ pub fn replay(input: &ScenarioInput) -> ScenarioOutput {
             }
         }
 
-        tick_times_ns.push(current_ns);
         let result = scheduler.tick();
-        record_tick(&result, current_ns, &mut events);
+        record_tick(&result, current_ns, &mut ticks);
     }
 
-    ScenarioOutput {
-        events,
-        tick_times_ns,
-    }
+    ScenarioOutput { ticks }
 }
 
 fn add_task_def<C: crate::Clock>(scheduler: &mut Scheduler<(), C>, td: &TaskDef) {
@@ -266,7 +267,7 @@ fn auto_duration(input: &ScenarioInput) -> u64 {
         .tasks
         .iter()
         .map(|t| t.period_ns)
-        .fold(1u64, |acc, p| lcm(acc, p));
+        .fold(1u64, lcm);
 
     let cap = longest_period.saturating_mul(10);
     let base = combined_period.saturating_mul(2).min(cap);
@@ -299,24 +300,38 @@ fn lcm(a: u64, b: u64) -> u64 {
     a / gcd(a, b) * b
 }
 
-fn record_tick(result: &crate::TickResult<'_>, at_ns: u64, events: &mut Vec<EventDef>) {
-    for exec in &result.fired {
-        let name = exec.task.name.as_deref().unwrap_or("?");
-        events.push(EventDef {
-            at_ns,
-            task_name: name.to_string(),
-            kind: EventKindDef::Fired,
-        });
-    }
-    for miss in &result.missed {
-        let name = miss.task.name.as_deref().unwrap_or("?");
-        for lateness in &miss.deadlines_missed {
-            let deadline_ns = at_ns.saturating_sub(lateness.as_nanos() as u64);
-            events.push(EventDef {
-                at_ns: deadline_ns,
+fn record_tick(result: &crate::TickResult<'_>, at_ns: u64, ticks: &mut Vec<TickDef>) {
+    let fired: Vec<FiredDef> = result
+        .fired
+        .iter()
+        .map(|exec| {
+            let name = exec.task.name.as_deref().unwrap_or("?");
+            FiredDef {
                 task_name: name.to_string(),
-                kind: EventKindDef::Missed,
-            });
-        }
-    }
+                drift_ns: exec.drift.as_nanos_signed() as i64,
+            }
+        })
+        .collect();
+
+    let missed: Vec<MissedDef> = result
+        .missed
+        .iter()
+        .map(|miss| {
+            let name = miss.task.name.as_deref().unwrap_or("?");
+            MissedDef {
+                task_name: name.to_string(),
+                deadlines_missed_ns: miss
+                    .deadlines_missed
+                    .iter()
+                    .map(|d| d.as_nanos() as u64)
+                    .collect(),
+            }
+        })
+        .collect();
+
+    ticks.push(TickDef {
+        at_ns,
+        fired,
+        missed,
+    });
 }

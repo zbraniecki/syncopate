@@ -51,101 +51,135 @@
     "min_tick_interval_ns": null
   },
   "expected": {
-    "events": [
+    "ticks": [
       {
         "at_ns": 0,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 0,
-        "task_name": "slow",
-        "kind": "Fired"
+        "fired": [
+          {
+            "task_name": "fast",
+            "drift_ns": 0
+          },
+          {
+            "task_name": "slow",
+            "drift_ns": 0
+          }
+        ]
       },
       {
         "at_ns": 200000000,
-        "task_name": "fast",
-        "kind": "Fired"
+        "fired": [
+          {
+            "task_name": "fast",
+            "drift_ns": 0
+          }
+        ]
       },
       {
         "at_ns": 400000000,
-        "task_name": "fast",
-        "kind": "Fired"
+        "fired": [
+          {
+            "task_name": "fast",
+            "drift_ns": 0
+          }
+        ]
       },
       {
         "at_ns": 450000000,
-        "task_name": "slow",
-        "kind": "Fired"
+        "fired": [
+          {
+            "task_name": "slow",
+            "drift_ns": -50000000
+          }
+        ]
       },
       {
         "at_ns": 800000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 600000000,
-        "task_name": "fast",
-        "kind": "Missed"
+        "fired": [
+          {
+            "task_name": "fast",
+            "drift_ns": 0
+          }
+        ],
+        "missed": [
+          {
+            "task_name": "fast",
+            "deadlines_missed_ns": [
+              200000000
+            ]
+          }
+        ]
       },
       {
         "at_ns": 1000000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 1000000000,
-        "task_name": "slow",
-        "kind": "Fired"
+        "fired": [
+          {
+            "task_name": "fast",
+            "drift_ns": 0
+          },
+          {
+            "task_name": "slow",
+            "drift_ns": 0
+          }
+        ]
       },
       {
         "at_ns": 1200000000,
-        "task_name": "fast",
-        "kind": "Fired"
+        "fired": [
+          {
+            "task_name": "fast",
+            "drift_ns": 0
+          }
+        ]
       },
       {
         "at_ns": 1400000000,
-        "task_name": "fast",
-        "kind": "Fired"
+        "fired": [
+          {
+            "task_name": "fast",
+            "drift_ns": 0
+          }
+        ]
       },
       {
         "at_ns": 1500000000,
-        "task_name": "slow",
-        "kind": "Fired"
+        "fired": [
+          {
+            "task_name": "slow",
+            "drift_ns": 0
+          }
+        ]
       },
       {
         "at_ns": 1600000000,
-        "task_name": "fast",
-        "kind": "Fired"
+        "fired": [
+          {
+            "task_name": "fast",
+            "drift_ns": 0
+          }
+        ]
       },
       {
         "at_ns": 1800000000,
-        "task_name": "fast",
-        "kind": "Fired"
+        "fired": [
+          {
+            "task_name": "fast",
+            "drift_ns": 0
+          }
+        ]
       },
       {
         "at_ns": 2000000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 2000000000,
-        "task_name": "slow",
-        "kind": "Fired"
+        "fired": [
+          {
+            "task_name": "fast",
+            "drift_ns": 0
+          },
+          {
+            "task_name": "slow",
+            "drift_ns": 0
+          }
+        ]
       }
-    ],
-    "tick_times_ns": [
-      0,
-      200000000,
-      400000000,
-      450000000,
-      800000000,
-      1000000000,
-      1200000000,
-      1400000000,
-      1500000000,
-      1600000000,
-      1800000000,
-      2000000000
     ]
   }
 }

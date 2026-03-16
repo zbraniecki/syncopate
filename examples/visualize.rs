@@ -1403,10 +1403,10 @@ async fn main() {
     }
 }
 
-fn write_fixture(scenario: &Scenario, result: &SimResult, path: &str) {
+fn write_fixture(scenario: &Scenario, _result: &SimResult, path: &str) {
     #[cfg(not(feature = "serde"))]
     {
-        let _ = (scenario, result, path);
+        let _ = (scenario, _result, path);
         eprintln!(
             "Error: --write-scenario requires the 'serde' feature. \
              Re-run with: cargo run --example visualize --features serde -- ..."
@@ -1462,21 +1462,7 @@ fn write_fixture(scenario: &Scenario, result: &SimResult, path: &str) {
             min_tick_interval_ns: scenario.min_tick_interval.map(|d| d.as_nanos() as u64),
         };
 
-        let expected = ScenarioOutput {
-            events: result
-                .events
-                .iter()
-                .map(|e| EventDef {
-                    at_ns: e.at_nanos,
-                    task_name: e.task_name.clone(),
-                    kind: match e.kind {
-                        EventKind::Fired => EventKindDef::Fired,
-                        EventKind::Missed => EventKindDef::Missed,
-                    },
-                })
-                .collect(),
-            tick_times_ns: result.tick_times.clone(),
-        };
+        let expected = replay(&input);
 
         let fixture = Fixture {
             name: scenario.name.clone(),

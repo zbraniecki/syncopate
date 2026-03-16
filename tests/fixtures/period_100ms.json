@@ -1,0 +1,57 @@
+{
+  "name": "custom",
+  "description": "1 task(s), 0 disruption(s)",
+  "input": {
+    "tasks": [
+      {
+        "name": "a",
+        "period_ns": 100000000,
+        "window_early_ns": 0,
+        "window_late_ns": 0,
+        "delay_ns": 0,
+        "kind": {
+          "type": "Relative",
+          "initial_delay_ns": 0,
+          "schedule": "FixedRate"
+        },
+        "on_miss": "Skip",
+        "repeat": null
+      }
+    ],
+    "disruptions": [],
+    "duration_ns": null,
+    "wall_clock_offset_ns": 0,
+    "min_tick_interval_ns": null
+  },
+  "expected": {
+    "ticks": [
+      {
+        "at_ns": 0,
+        "fired": [
+          {
+            "task_name": "a",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 100000000,
+        "fired": [
+          {
+            "task_name": "a",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 200000000,
+        "fired": [
+          {
+            "task_name": "a",
+            "drift_ns": 0
+          }
+        ]
+      }
+    ]
+  }
+}

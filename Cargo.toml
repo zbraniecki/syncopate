@@ -9,6 +9,7 @@ repository = "https://github.com/zbraniecki/syncopate"
 categories = ["asynchronous", "concurrency", "algorithms"]
 
 [features]
+default = ["serde"]
 serde = ["dep:serde_crate", "dep:serde_json"]
 
 [dependencies]
