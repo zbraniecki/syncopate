@@ -1,0 +1,416 @@
+{
+  "name": "multi",
+  "description": "Three tasks (150ms, 300ms, 500ms) with two disruptions",
+  "input": {
+    "tasks": [
+      {
+        "name": "a",
+        "period_ns": 150000000,
+        "window_early_ns": 30000000,
+        "window_late_ns": 30000000,
+        "delay_ns": 0,
+        "kind": {
+          "type": "Relative",
+          "initial_delay_ns": 0,
+          "schedule": "FixedRate"
+        },
+        "on_miss": "Skip",
+        "repeat": null
+      },
+      {
+        "name": "b",
+        "period_ns": 300000000,
+        "window_early_ns": 50000000,
+        "window_late_ns": 50000000,
+        "delay_ns": 0,
+        "kind": {
+          "type": "Relative",
+          "initial_delay_ns": 0,
+          "schedule": "FixedRate"
+        },
+        "on_miss": "Skip",
+        "repeat": null
+      },
+      {
+        "name": "c",
+        "period_ns": 500000000,
+        "window_early_ns": 50000000,
+        "window_late_ns": 50000000,
+        "delay_ns": 0,
+        "kind": {
+          "type": "Relative",
+          "initial_delay_ns": 0,
+          "schedule": "FixedRate"
+        },
+        "on_miss": "RunLatest",
+        "repeat": null
+      }
+    ],
+    "disruptions": [
+      {
+        "at_ns": 400000000,
+        "duration_ns": 250000000
+      },
+      {
+        "at_ns": 2000000000,
+        "duration_ns": 400000000
+      }
+    ],
+    "duration_ns": null,
+    "wall_clock_offset_ns": 0,
+    "min_tick_interval_ns": null
+  },
+  "expected": {
+    "events": [
+      {
+        "at_ns": 0,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 0,
+        "task_name": "b",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 0,
+        "task_name": "c",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 150000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 300000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 300000000,
+        "task_name": "b",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 650000000,
+        "task_name": "b",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 650000000,
+        "task_name": "c",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 450000000,
+        "task_name": "a",
+        "kind": "Missed"
+      },
+      {
+        "at_ns": 600000000,
+        "task_name": "a",
+        "kind": "Missed"
+      },
+      {
+        "at_ns": 750000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 900000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 900000000,
+        "task_name": "b",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 1000000000,
+        "task_name": "c",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 1050000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 1200000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 1200000000,
+        "task_name": "b",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 1350000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 1500000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 1500000000,
+        "task_name": "b",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 1500000000,
+        "task_name": "c",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 1650000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 1800000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 1800000000,
+        "task_name": "b",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 1950000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 1950000000,
+        "task_name": "c",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 2400000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 2400000000,
+        "task_name": "b",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 2100000000,
+        "task_name": "a",
+        "kind": "Missed"
+      },
+      {
+        "at_ns": 2250000000,
+        "task_name": "a",
+        "kind": "Missed"
+      },
+      {
+        "at_ns": 2100000000,
+        "task_name": "b",
+        "kind": "Missed"
+      },
+      {
+        "at_ns": 2500000000,
+        "task_name": "c",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 2550000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 2700000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 2700000000,
+        "task_name": "b",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 2850000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 3000000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 3000000000,
+        "task_name": "b",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 3000000000,
+        "task_name": "c",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 3150000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 3300000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 3300000000,
+        "task_name": "b",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 3450000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 3450000000,
+        "task_name": "c",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 3600000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 3600000000,
+        "task_name": "b",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 3750000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 3900000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 3900000000,
+        "task_name": "b",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 4000000000,
+        "task_name": "c",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 4050000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 4200000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 4200000000,
+        "task_name": "b",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 4350000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 4500000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 4500000000,
+        "task_name": "b",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 4500000000,
+        "task_name": "c",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 4650000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 4800000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 4800000000,
+        "task_name": "b",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 4950000000,
+        "task_name": "a",
+        "kind": "Fired"
+      },
+      {
+        "at_ns": 4950000000,
+        "task_name": "c",
+        "kind": "Fired"
+      }
+    ],
+    "tick_times_ns": [
+      0,
+      150000000,
+      300000000,
+      400000000,
+      650000000,
+      750000000,
+      900000000,
+      1000000000,
+      1050000000,
+      1200000000,
+      1350000000,
+      1500000000,
+      1650000000,
+      1800000000,
+      1950000000,
+      2000000000,
+      2400000000,
+      2500000000,
+      2550000000,
+      2700000000,
+      2850000000,
+      3000000000,
+      3150000000,
+      3300000000,
+      3450000000,
+      3600000000,
+      3750000000,
+      3900000000,
+      4000000000,
+      4050000000,
+      4200000000,
+      4350000000,
+      4500000000,
+      4650000000,
+      4800000000,
+      4950000000,
+      5000000000
+    ]
+  }
+}

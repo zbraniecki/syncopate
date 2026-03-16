@@ -89,6 +89,10 @@ struct Args {
     /// Execution mode: sim (deterministic simulation) or real (actual tokio sleep)
     #[arg(long, default_value = "sim")]
     mode: Mode,
+
+    /// Write scenario fixture (inputs + expected outputs) to a JSON file
+    #[arg(long, value_name = "PATH")]
+    write_scenario: Option<String>,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -1336,6 +1340,88 @@ async fn main() {
         Mode::Real => simulate_real(&scenario).await,
     };
     render(&scenario, &result);
+
+    if let Some(ref path) = args.write_scenario {
+        write_fixture(&scenario, &result, path);
+    }
+}
+
+fn write_fixture(scenario: &Scenario, result: &SimResult, path: &str) {
+    #[cfg(not(feature = "serde"))]
+    {
+        let _ = (scenario, result, path);
+        eprintln!(
+            "Error: --write-scenario requires the 'serde' feature. \
+             Re-run with: cargo run --example visualize --features serde -- ..."
+        );
+        std::process::exit(1);
+    }
+
+    #[cfg(feature = "serde")]
+    {
+        use syncopate::fixture::*;
+
+        let input = ScenarioInput {
+            tasks: scenario.tasks.iter().map(|t| {
+                let (window_early_ns, window_late_ns) = (
+                    t.window.as_nanos() as u64,
+                    t.window.as_nanos() as u64,
+                );
+                let kind = match &t.kind {
+                    ScenarioTaskKind::Relative { initial_delay, schedule } => TaskKindDef::Relative {
+                        initial_delay_ns: initial_delay.as_nanos() as u64,
+                        schedule: *schedule,
+                    },
+                    ScenarioTaskKind::Absolute { offset } => TaskKindDef::Absolute {
+                        offset_ns: offset.map_or(0, |o| o.as_nanos() as u64),
+                    },
+                };
+                TaskDef {
+                    name: t.name.clone(),
+                    period_ns: t.period.as_nanos() as u64,
+                    window_early_ns,
+                    window_late_ns,
+                    delay_ns: t.delay.as_nanos() as u64,
+                    kind,
+                    on_miss: t.on_miss,
+                    repeat: None,
+                }
+            }).collect(),
+            disruptions: scenario.disruptions.iter().map(|d| DisruptionDef {
+                at_ns: d.at.as_nanos() as u64,
+                duration_ns: d.duration.as_nanos() as u64,
+            }).collect(),
+            duration_ns: scenario.duration_override.map(|d| d.as_nanos() as u64),
+            wall_clock_offset_ns: scenario.wall_clock_offset.as_nanos() as u64,
+            min_tick_interval_ns: scenario.min_tick_interval.map(|d| d.as_nanos() as u64),
+        };
+
+        let expected = ScenarioOutput {
+            events: result.events.iter().map(|e| EventDef {
+                at_ns: e.at_nanos,
+                task_name: e.task_name.clone(),
+                kind: match e.kind {
+                    EventKind::Fired => EventKindDef::Fired,
+                    EventKind::Missed => EventKindDef::Missed,
+                },
+            }).collect(),
+            tick_times_ns: result.tick_times.clone(),
+        };
+
+        let fixture = Fixture {
+            name: scenario.name.clone(),
+            description: scenario.description.clone(),
+            input,
+            expected,
+        };
+
+        let json = serde_json::to_string_pretty(&fixture).expect("failed to serialize fixture");
+        std::fs::write(path, &json).unwrap_or_else(|e| {
+            eprintln!("Error writing fixture to '{path}': {e}");
+            std::process::exit(1);
+        });
+        eprintln!("Fixture written to {path}");
+    }
 }
 
 fn die(msg: &str) -> ! {

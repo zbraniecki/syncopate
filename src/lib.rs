@@ -1,4 +1,6 @@
 pub mod clock;
+#[cfg(feature = "serde")]
+pub mod fixture;
 pub mod scheduler;
 pub mod task;
 
