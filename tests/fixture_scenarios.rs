@@ -20,13 +20,10 @@ mod tests {
                 continue;
             }
 
-            let contents =
-                std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                    panic!("failed to read {}: {e}", path.display())
-                });
-            let fixture: Fixture = serde_json::from_str(&contents).unwrap_or_else(|e| {
-                panic!("failed to parse {}: {e}", path.display())
-            });
+            let contents = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+            let fixture: Fixture = serde_json::from_str(&contents)
+                .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
 
             let actual = fixture.run();
 
@@ -52,7 +49,8 @@ mod tests {
                 .enumerate()
             {
                 assert_eq!(
-                    expected, got,
+                    expected,
+                    got,
                     "Fixture '{}' ({}): event {i} mismatch\n  expected: {expected:?}\n  actual:   {got:?}",
                     fixture.name,
                     path.display(),
@@ -60,7 +58,8 @@ mod tests {
             }
 
             assert_eq!(
-                fixture.expected.tick_times_ns, actual.tick_times_ns,
+                fixture.expected.tick_times_ns,
+                actual.tick_times_ns,
                 "Fixture '{}' ({}): tick_times mismatch",
                 fixture.name,
                 path.display(),

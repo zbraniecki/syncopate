@@ -173,12 +173,13 @@ impl<Ctx> TaskBuilder<Ctx> {
             }
             TaskKind::Absolute => {
                 if let Some(offset) = self.offset
-                    && offset >= self.period {
-                        return Err(TaskBuildError::OffsetExceedsPeriod {
-                            period: self.period,
-                            offset,
-                        });
-                    }
+                    && offset >= self.period
+                {
+                    return Err(TaskBuildError::OffsetExceedsPeriod {
+                        period: self.period,
+                        offset,
+                    });
+                }
                 TaskType::Absolute {
                     period: self.period,
                     offset: self.offset,

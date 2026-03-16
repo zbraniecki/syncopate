@@ -1,6 +1,8 @@
 use std::rc::Rc;
 use std::time::Duration;
-use syncopate::{Drift, MissedTickBehavior, PeriodicSchedule, Scheduler, SimClock, TaskBuilder, Window};
+use syncopate::{
+    Drift, MissedTickBehavior, PeriodicSchedule, Scheduler, SimClock, TaskBuilder, Window,
+};
 
 fn make_scheduler() -> (Rc<SimClock>, Scheduler<(), Rc<SimClock>>) {
     let clock = Rc::new(SimClock::new());

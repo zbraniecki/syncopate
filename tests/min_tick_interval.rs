@@ -51,9 +51,20 @@ fn min_tick_interval_causes_missed_deadlines() {
     clock.advance(Duration::from_millis(500));
     let result = scheduler.tick();
 
-    assert_eq!(result.fired.len(), 1, "500ms deadline should fire (it's within window)");
-    assert!(!result.missed.is_empty(), "should report missed deadlines for 100-400ms");
-    assert_eq!(result.missed[0].deadlines_missed.len(), 4, "4 deadlines missed (100-400ms)");
+    assert_eq!(
+        result.fired.len(),
+        1,
+        "500ms deadline should fire (it's within window)"
+    );
+    assert!(
+        !result.missed.is_empty(),
+        "should report missed deadlines for 100-400ms"
+    );
+    assert_eq!(
+        result.missed[0].deadlines_missed.len(),
+        4,
+        "4 deadlines missed (100-400ms)"
+    );
 }
 
 #[test]
@@ -75,8 +86,15 @@ fn min_tick_interval_execute_mode_fires_latest() {
     let result = scheduler.tick();
 
     assert_eq!(result.fired.len(), 1, "should fire for the latest deadline");
-    assert!(!result.missed.is_empty(), "should report earlier missed deadlines");
-    assert_eq!(result.missed[0].deadlines_missed.len(), 4, "4 deadlines missed (100-400ms)");
+    assert!(
+        !result.missed.is_empty(),
+        "should report earlier missed deadlines"
+    );
+    assert_eq!(
+        result.missed[0].deadlines_missed.len(),
+        4,
+        "4 deadlines missed (100-400ms)"
+    );
 }
 
 #[test]
@@ -97,7 +115,11 @@ fn wide_window_task_survives_min_tick_interval() {
     clock.advance(Duration::from_millis(300));
     let result = scheduler.tick();
 
-    assert_eq!(result.fired.len(), 1, "wide window task should still fire (late but in window)");
+    assert_eq!(
+        result.fired.len(),
+        1,
+        "wide window task should still fire (late but in window)"
+    );
     assert!(result.missed.is_empty(), "should not have missed deadlines");
 }
 
@@ -158,15 +180,27 @@ fn period_500ms_fires_every_1s_with_min_tick_interval() {
     clock.advance(Duration::from_secs(1));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1, "1s deadline should fire");
-    assert_eq!(result.missed[0].deadlines_missed.len(), 1, "500ms deadline missed");
+    assert_eq!(
+        result.missed[0].deadlines_missed.len(),
+        1,
+        "500ms deadline missed"
+    );
 
     clock.advance(Duration::from_secs(1));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1, "2s deadline should fire");
-    assert_eq!(result.missed[0].deadlines_missed.len(), 1, "1500ms deadline missed");
+    assert_eq!(
+        result.missed[0].deadlines_missed.len(),
+        1,
+        "1500ms deadline missed"
+    );
 
     clock.advance(Duration::from_secs(1));
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1, "3s deadline should fire");
-    assert_eq!(result.missed[0].deadlines_missed.len(), 1, "2500ms deadline missed");
+    assert_eq!(
+        result.missed[0].deadlines_missed.len(),
+        1,
+        "2500ms deadline missed"
+    );
 }

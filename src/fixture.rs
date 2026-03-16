@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use serde_crate::{Deserialize, Serialize};
 
-use crate::{MissedTickBehavior, PeriodicSchedule, Repeat, Scheduler, SimClock, TaskBuilder, Window};
+use crate::{
+    MissedTickBehavior, PeriodicSchedule, Repeat, Scheduler, SimClock, TaskBuilder, Window,
+};
 
 // ── Fixture types ────────────────────────────────────────────────────────────
 
@@ -111,11 +113,8 @@ pub fn replay(input: &ScenarioInput) -> ScenarioOutput {
     }
 
     // Track tasks with nonzero delay for deferred addition.
-    let mut pending_tasks: Vec<(u64, &TaskDef)> = input
-        .tasks
-        .iter()
-        .map(|t| (t.delay_ns, t))
-        .collect();
+    let mut pending_tasks: Vec<(u64, &TaskDef)> =
+        input.tasks.iter().map(|t| (t.delay_ns, t)).collect();
     pending_tasks.sort_by_key(|(delay, _)| *delay);
 
     // Add tasks with zero delay immediately.
@@ -124,14 +123,7 @@ pub fn replay(input: &ScenarioInput) -> ScenarioOutput {
         add_task_def(&mut scheduler, td);
     }
 
-    let duration_ns = input.duration_ns.unwrap_or_else(|| {
-        input
-            .tasks
-            .iter()
-            .map(|t| t.delay_ns + t.period_ns * 10)
-            .max()
-            .unwrap_or(5_000_000_000)
-    });
+    let duration_ns = input.duration_ns.unwrap_or_else(|| auto_duration(input));
 
     let mut events = Vec::new();
     let mut tick_times_ns = Vec::new();
@@ -260,6 +252,51 @@ fn add_task_def<C: crate::Clock>(scheduler: &mut Scheduler<(), C>, td: &TaskDef)
     }
     let task = builder.build().unwrap();
     scheduler.add_task(task).unwrap();
+}
+
+fn auto_duration(input: &ScenarioInput) -> u64 {
+    let longest_period = input
+        .tasks
+        .iter()
+        .map(|t| t.period_ns)
+        .max()
+        .unwrap_or(500_000_000);
+
+    let combined_period = input
+        .tasks
+        .iter()
+        .map(|t| t.period_ns)
+        .fold(1u64, |acc, p| lcm(acc, p));
+
+    let cap = longest_period.saturating_mul(10);
+    let base = combined_period.saturating_mul(2).min(cap);
+
+    let delay_adjusted = input
+        .tasks
+        .iter()
+        .map(|t| t.delay_ns + t.period_ns * 2)
+        .max()
+        .unwrap_or(0);
+
+    let disruption_end = input
+        .disruptions
+        .iter()
+        .map(|d| d.at_ns + d.duration_ns)
+        .max()
+        .unwrap_or(0);
+
+    base.max(delay_adjusted).max(disruption_end)
+}
+
+fn gcd(a: u64, b: u64) -> u64 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+fn lcm(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    a / gcd(a, b) * b
 }
 
 fn record_tick(result: &crate::TickResult<'_>, at_ns: u64, events: &mut Vec<EventDef>) {

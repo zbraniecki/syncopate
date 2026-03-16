@@ -1,7 +1,7 @@
-use crate::clock::{MonoInstant, WallInstant};
-use crate::task::{Drift, MissedTickBehavior, PeriodicSchedule, Task, TaskType, Window};
 use super::deadline::{calculate_drift, missed_offsets};
 use super::types::{MissedExecution, TaskExecution, TaskState};
+use crate::clock::{MonoInstant, WallInstant};
+use crate::task::{Drift, MissedTickBehavior, PeriodicSchedule, Task, TaskType, Window};
 use std::time::Duration;
 
 pub(crate) fn tick_relative<'a, Ctx>(
@@ -168,8 +168,12 @@ pub(crate) fn tick_absolute<'a, Ctx>(
         *on_miss,
     );
 
-    let deadline =
-        super::deadline::next_absolute_deadline(wall_now, period, offset_dur, state.last_wall_deadline);
+    let deadline = super::deadline::next_absolute_deadline(
+        wall_now,
+        period,
+        offset_dur,
+        state.last_wall_deadline,
+    );
 
     let window_start = deadline - window.early;
     let window_end = deadline + window.late;
@@ -203,13 +207,11 @@ pub(crate) fn tick_absolute<'a, Ctx>(
         let periods_elapsed = elapsed_ns / period_ns;
         let count = periods_elapsed as u32 + 1;
 
-        let latest_wall_deadline =
-            WallInstant(deadline.as_nanos() + period_ns * periods_elapsed);
+        let latest_wall_deadline = WallInstant(deadline.as_nanos() + period_ns * periods_elapsed);
         let latest_window_start_ns = latest_wall_deadline
             .as_nanos()
             .saturating_sub(window.early.as_nanos() as u64);
-        let latest_window_end_ns =
-            latest_wall_deadline.as_nanos() + window.late.as_nanos() as u64;
+        let latest_window_end_ns = latest_wall_deadline.as_nanos() + window.late.as_nanos() as u64;
         let latest_in_window = wall_now.as_nanos() >= latest_window_start_ns
             && wall_now.as_nanos() <= latest_window_end_ns;
 

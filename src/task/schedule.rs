@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(serde_crate::Serialize, serde_crate::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde_crate::Serialize, serde_crate::Deserialize)
+)]
 #[cfg_attr(feature = "serde", serde(crate = "serde_crate"))]
 pub enum PeriodicSchedule {
     #[default]
@@ -10,17 +13,25 @@ pub enum PeriodicSchedule {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(serde_crate::Serialize, serde_crate::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde_crate::Serialize, serde_crate::Deserialize)
+)]
 #[cfg_attr(feature = "serde", serde(crate = "serde_crate"))]
 pub enum MissedTickBehavior {
     RunLatest,
-    Burst { max: Option<u32> },
+    Burst {
+        max: Option<u32>,
+    },
     #[default]
     Skip,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde_crate::Serialize, serde_crate::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde_crate::Serialize, serde_crate::Deserialize)
+)]
 #[cfg_attr(feature = "serde", serde(crate = "serde_crate"))]
 pub enum Repeat {
     Forever,

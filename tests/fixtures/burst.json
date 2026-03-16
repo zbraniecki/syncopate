@@ -131,111 +131,6 @@
         "at_ns": 2000000000,
         "task_name": "slow",
         "kind": "Fired"
-      },
-      {
-        "at_ns": 2200000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 2400000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 2500000000,
-        "task_name": "slow",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 2600000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 2800000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 3000000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 3000000000,
-        "task_name": "slow",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 3200000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 3400000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 3500000000,
-        "task_name": "slow",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 3600000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 3800000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 4000000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 4000000000,
-        "task_name": "slow",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 4200000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 4400000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 4500000000,
-        "task_name": "slow",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 4600000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 4800000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 5000000000,
-        "task_name": "fast",
-        "kind": "Fired"
-      },
-      {
-        "at_ns": 5000000000,
-        "task_name": "slow",
-        "kind": "Fired"
       }
     ],
     "tick_times_ns": [
@@ -250,25 +145,7 @@
       1500000000,
       1600000000,
       1800000000,
-      2000000000,
-      2200000000,
-      2400000000,
-      2500000000,
-      2600000000,
-      2800000000,
-      3000000000,
-      3200000000,
-      3400000000,
-      3500000000,
-      3600000000,
-      3800000000,
-      4000000000,
-      4200000000,
-      4400000000,
-      4500000000,
-      4600000000,
-      4800000000,
-      5000000000
+      2000000000
     ]
   }
 }

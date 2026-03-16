@@ -7,9 +7,9 @@ pub use types::{AddTaskError, MissedExecution, TaskExecution, TickResult};
 use crate::clock::{Clock, MonoInstant, RealClock};
 use crate::task::{Repeat, Task, TaskType};
 use deadline::{floor_wall_deadline, next_absolute_deadline};
+use std::time::Duration;
 use tick::{tick_absolute, tick_relative};
 use types::{ScheduledTask, TaskState};
-use std::time::Duration;
 
 pub struct Scheduler<Ctx = (), C: Clock = RealClock> {
     clock: C,

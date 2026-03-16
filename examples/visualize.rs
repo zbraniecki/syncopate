@@ -254,15 +254,56 @@ impl Scenario {
         if let Some(d) = self.duration_override {
             return d;
         }
-        // Use the latest end-of-interest: delay + 10 * period per task.
-        let longest = self
+
+        let longest_period = self
             .tasks
             .iter()
-            .map(|t| t.delay + t.period * 10)
+            .map(|t| t.period.as_nanos() as u64)
             .max()
-            .unwrap_or(Duration::from_millis(5000));
-        longest
+            .unwrap_or(500_000_000); // 500ms default
+
+        // Compute LCM of all task periods.
+        let combined_period = self
+            .tasks
+            .iter()
+            .map(|t| t.period.as_nanos() as u64)
+            .fold(1u64, |acc, p| lcm(acc, p));
+
+        let cap = longest_period.saturating_mul(10);
+
+        // 2× LCM so the pattern visibly repeats, capped at 10× longest.
+        let base = combined_period.saturating_mul(2).min(cap);
+
+        // Ensure delayed tasks are visible (delay + 2× their period).
+        let delay_adjusted = self
+            .tasks
+            .iter()
+            .map(|t| t.delay.as_nanos() as u64 + t.period.as_nanos() as u64 * 2)
+            .max()
+            .unwrap_or(0);
+
+        // Ensure disruptions fit.
+        let disruption_end = self
+            .disruptions
+            .iter()
+            .map(|d| (d.at + d.duration).as_nanos() as u64)
+            .max()
+            .unwrap_or(0);
+
+        let duration_ns = base.max(delay_adjusted).max(disruption_end);
+        Duration::from_nanos(duration_ns)
     }
+}
+
+fn gcd(a: u64, b: u64) -> u64 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+fn lcm(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    a / gcd(a, b) * b // divide first to reduce overflow risk
 }
 
 // ── Task/disruption parsing ──────────────────────────────────────────────────
@@ -333,8 +374,8 @@ fn parse_task_spec(spec: &str) -> Result<ScenarioTask, String> {
         None => Duration::ZERO,
     };
 
-    let is_absolute = task_type.as_deref() == Some("anchored")
-        || task_type.as_deref() == Some("absolute");
+    let is_absolute =
+        task_type.as_deref() == Some("anchored") || task_type.as_deref() == Some("absolute");
 
     if is_absolute {
         if initial_delay != Duration::ZERO {
@@ -813,10 +854,7 @@ fn record_tick(result: &syncopate::TickResult<'_>, at_nanos: u64, events: &mut V
     }
 }
 
-fn add_scenario_task<C: syncopate::Clock>(
-    scheduler: &mut Scheduler<(), C>,
-    st: &ScenarioTask,
-) {
+fn add_scenario_task<C: syncopate::Clock>(scheduler: &mut Scheduler<(), C>, st: &ScenarioTask) {
     let window = Window::symmetric(st.window);
     let builder = match &st.kind {
         ScenarioTaskKind::Relative {
@@ -850,7 +888,12 @@ fn task_label(task: &ScenarioTask) -> String {
         } => format!(" [absolute+{}]", fmt_duration(*offset)),
     };
     if task.delay.is_zero() {
-        format!("{} ({}){}", task.name, fmt_duration(task.period), kind_suffix)
+        format!(
+            "{} ({}){}",
+            task.name,
+            fmt_duration(task.period),
+            kind_suffix
+        )
     } else {
         format!(
             "{} ({}, +{}){}",
@@ -944,13 +987,10 @@ fn render(scenario: &Scenario, result: &SimResult) {
         for col in 0..=cols {
             let col_start = col as u64 * res_nanos;
             let col_end = col_start + res_nanos;
-            let has_ideal = scenario
-                .tasks
-                .iter()
-                .any(|t| has_ideal_deadline_for_task(t, scenario.wall_clock_offset, col_start, col_end));
-            let has_actual_tick = tick_times
-                .iter()
-                .any(|&t| t >= col_start && t < col_end);
+            let has_ideal = scenario.tasks.iter().any(|t| {
+                has_ideal_deadline_for_task(t, scenario.wall_clock_offset, col_start, col_end)
+            });
+            let has_actual_tick = tick_times.iter().any(|&t| t >= col_start && t < col_end);
             if has_ideal && has_actual_tick {
                 // Ideal deadline with an actual tick — normal cyan
                 print!("\x1b[36m\u{2193}\x1b[0m");
@@ -1238,17 +1278,35 @@ fn has_ideal_deadline_anchored(
 }
 
 /// Dispatcher: check if a task has an ideal deadline in [col_start, col_end).
-fn has_ideal_deadline_for_task(task: &ScenarioTask, wall_clock_offset: Duration, col_start: u64, col_end: u64) -> bool {
+fn has_ideal_deadline_for_task(
+    task: &ScenarioTask,
+    wall_clock_offset: Duration,
+    col_start: u64,
+    col_end: u64,
+) -> bool {
     let period_nanos = task.period.as_nanos() as u64;
     let delay_nanos = task.delay.as_nanos() as u64;
     match &task.kind {
         ScenarioTaskKind::Relative {
             initial_delay,
             schedule: _,
-        } => has_ideal_deadline_relative(period_nanos, delay_nanos, initial_delay.as_nanos() as u64, col_start, col_end),
+        } => has_ideal_deadline_relative(
+            period_nanos,
+            delay_nanos,
+            initial_delay.as_nanos() as u64,
+            col_start,
+            col_end,
+        ),
         ScenarioTaskKind::Absolute { offset } => {
             let offset_nanos = offset.map_or(0, |o| o.as_nanos() as u64);
-            has_ideal_deadline_anchored(period_nanos, offset_nanos, delay_nanos, wall_clock_offset.as_nanos() as u64, col_start, col_end)
+            has_ideal_deadline_anchored(
+                period_nanos,
+                offset_nanos,
+                delay_nanos,
+                wall_clock_offset.as_nanos() as u64,
+                col_start,
+                col_end,
+            )
         }
     }
 }
@@ -1314,8 +1372,7 @@ async fn main() {
     };
 
     if let Some(ref interval_str) = args.min_tick_interval {
-        scenario.min_tick_interval =
-            Some(parse_duration(interval_str).unwrap_or_else(|e| die(&e)));
+        scenario.min_tick_interval = Some(parse_duration(interval_str).unwrap_or_else(|e| die(&e)));
     }
 
     if scenario.tasks.is_empty() {
@@ -1362,49 +1419,62 @@ fn write_fixture(scenario: &Scenario, result: &SimResult, path: &str) {
         use syncopate::fixture::*;
 
         let input = ScenarioInput {
-            tasks: scenario.tasks.iter().map(|t| {
-                let (window_early_ns, window_late_ns) = (
-                    t.window.as_nanos() as u64,
-                    t.window.as_nanos() as u64,
-                );
-                let kind = match &t.kind {
-                    ScenarioTaskKind::Relative { initial_delay, schedule } => TaskKindDef::Relative {
-                        initial_delay_ns: initial_delay.as_nanos() as u64,
-                        schedule: *schedule,
-                    },
-                    ScenarioTaskKind::Absolute { offset } => TaskKindDef::Absolute {
-                        offset_ns: offset.map_or(0, |o| o.as_nanos() as u64),
-                    },
-                };
-                TaskDef {
-                    name: t.name.clone(),
-                    period_ns: t.period.as_nanos() as u64,
-                    window_early_ns,
-                    window_late_ns,
-                    delay_ns: t.delay.as_nanos() as u64,
-                    kind,
-                    on_miss: t.on_miss,
-                    repeat: None,
-                }
-            }).collect(),
-            disruptions: scenario.disruptions.iter().map(|d| DisruptionDef {
-                at_ns: d.at.as_nanos() as u64,
-                duration_ns: d.duration.as_nanos() as u64,
-            }).collect(),
+            tasks: scenario
+                .tasks
+                .iter()
+                .map(|t| {
+                    let (window_early_ns, window_late_ns) =
+                        (t.window.as_nanos() as u64, t.window.as_nanos() as u64);
+                    let kind = match &t.kind {
+                        ScenarioTaskKind::Relative {
+                            initial_delay,
+                            schedule,
+                        } => TaskKindDef::Relative {
+                            initial_delay_ns: initial_delay.as_nanos() as u64,
+                            schedule: *schedule,
+                        },
+                        ScenarioTaskKind::Absolute { offset } => TaskKindDef::Absolute {
+                            offset_ns: offset.map_or(0, |o| o.as_nanos() as u64),
+                        },
+                    };
+                    TaskDef {
+                        name: t.name.clone(),
+                        period_ns: t.period.as_nanos() as u64,
+                        window_early_ns,
+                        window_late_ns,
+                        delay_ns: t.delay.as_nanos() as u64,
+                        kind,
+                        on_miss: t.on_miss,
+                        repeat: None,
+                    }
+                })
+                .collect(),
+            disruptions: scenario
+                .disruptions
+                .iter()
+                .map(|d| DisruptionDef {
+                    at_ns: d.at.as_nanos() as u64,
+                    duration_ns: d.duration.as_nanos() as u64,
+                })
+                .collect(),
             duration_ns: scenario.duration_override.map(|d| d.as_nanos() as u64),
             wall_clock_offset_ns: scenario.wall_clock_offset.as_nanos() as u64,
             min_tick_interval_ns: scenario.min_tick_interval.map(|d| d.as_nanos() as u64),
         };
 
         let expected = ScenarioOutput {
-            events: result.events.iter().map(|e| EventDef {
-                at_ns: e.at_nanos,
-                task_name: e.task_name.clone(),
-                kind: match e.kind {
-                    EventKind::Fired => EventKindDef::Fired,
-                    EventKind::Missed => EventKindDef::Missed,
-                },
-            }).collect(),
+            events: result
+                .events
+                .iter()
+                .map(|e| EventDef {
+                    at_ns: e.at_nanos,
+                    task_name: e.task_name.clone(),
+                    kind: match e.kind {
+                        EventKind::Fired => EventKindDef::Fired,
+                        EventKind::Missed => EventKindDef::Missed,
+                    },
+                })
+                .collect(),
             tick_times_ns: result.tick_times.clone(),
         };
 
