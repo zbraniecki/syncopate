@@ -21,14 +21,10 @@ serde_json = { version = "1", optional = true }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 comfy-table = "7"
-divan = "0.1"
 jiff = "0.2"
 serde_json = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
 
-# [[bench]]
-# name = "tick_overhead"
-# harness = false
-
-# [[bench]]
-# name = "scheduling_analysis"
-# harness = false
+[[bench]]
+name = "scheduler"
+harness = false

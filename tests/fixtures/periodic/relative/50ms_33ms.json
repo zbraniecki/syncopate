@@ -1,0 +1,282 @@
+{
+  "name": "custom",
+  "description": "2 task(s), 0 disruption(s)",
+  "input": {
+    "tasks": [
+      {
+        "name": "a",
+        "period_ns": 50000000,
+        "window_early_ns": 0,
+        "window_late_ns": 0,
+        "delay_ns": 0,
+        "kind": {
+          "type": "Relative",
+          "initial_delay_ns": 0,
+          "schedule": "FixedRate"
+        },
+        "on_miss": "Skip",
+        "repeat": null
+      },
+      {
+        "name": "b",
+        "period_ns": 33000000,
+        "window_early_ns": 0,
+        "window_late_ns": 0,
+        "delay_ns": 0,
+        "kind": {
+          "type": "Relative",
+          "initial_delay_ns": 0,
+          "schedule": "FixedRate"
+        },
+        "on_miss": "Skip",
+        "repeat": null
+      }
+    ],
+    "disruptions": [],
+    "duration_ns": null,
+    "wall_clock_offset_ns": 0,
+    "min_tick_interval_ns": null
+  },
+  "expected": {
+    "ticks": [
+      {
+        "at_ns": 0,
+        "fired": [
+          {
+            "task_name": "a",
+            "drift_ns": 0
+          },
+          {
+            "task_name": "b",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 33000000,
+        "fired": [
+          {
+            "task_name": "b",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 50000000,
+        "fired": [
+          {
+            "task_name": "a",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 66000000,
+        "fired": [
+          {
+            "task_name": "b",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 99000000,
+        "fired": [
+          {
+            "task_name": "b",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 100000000,
+        "fired": [
+          {
+            "task_name": "a",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 132000000,
+        "fired": [
+          {
+            "task_name": "b",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 150000000,
+        "fired": [
+          {
+            "task_name": "a",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 165000000,
+        "fired": [
+          {
+            "task_name": "b",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 198000000,
+        "fired": [
+          {
+            "task_name": "b",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 200000000,
+        "fired": [
+          {
+            "task_name": "a",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 231000000,
+        "fired": [
+          {
+            "task_name": "b",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 250000000,
+        "fired": [
+          {
+            "task_name": "a",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 264000000,
+        "fired": [
+          {
+            "task_name": "b",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 297000000,
+        "fired": [
+          {
+            "task_name": "b",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 300000000,
+        "fired": [
+          {
+            "task_name": "a",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 330000000,
+        "fired": [
+          {
+            "task_name": "b",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 350000000,
+        "fired": [
+          {
+            "task_name": "a",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 363000000,
+        "fired": [
+          {
+            "task_name": "b",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 396000000,
+        "fired": [
+          {
+            "task_name": "b",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 400000000,
+        "fired": [
+          {
+            "task_name": "a",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 429000000,
+        "fired": [
+          {
+            "task_name": "b",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 450000000,
+        "fired": [
+          {
+            "task_name": "a",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 462000000,
+        "fired": [
+          {
+            "task_name": "b",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 495000000,
+        "fired": [
+          {
+            "task_name": "b",
+            "drift_ns": 0
+          }
+        ]
+      },
+      {
+        "at_ns": 500000000,
+        "fired": [
+          {
+            "task_name": "a",
+            "drift_ns": 0
+          }
+        ]
+      }
+    ]
+  }
+}

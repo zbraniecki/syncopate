@@ -4,16 +4,16 @@ use std::path::Path;
 
 use syncopate::fixture::Fixture;
 
-#[test]
-fn replay_all_fixtures() {
-    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    if !fixtures_dir.exists() {
-        // No fixtures directory yet — not a failure.
+fn replay_fixture_dir(subdir: &str) {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(subdir);
+    if !dir.exists() {
         return;
     }
 
     let mut count = 0;
-    for entry in std::fs::read_dir(&fixtures_dir).expect("failed to read fixtures directory") {
+    for entry in std::fs::read_dir(&dir).expect("failed to read fixtures directory") {
         let entry = entry.expect("failed to read directory entry");
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -58,8 +58,22 @@ fn replay_all_fixtures() {
 
     assert!(
         count > 0,
-        "No fixture files found in {}",
-        fixtures_dir.display()
+        "No fixture files found in tests/fixtures/{}",
+        subdir,
     );
-    eprintln!("Replayed {count} fixture(s) successfully");
+}
+
+#[test]
+fn periodic_relative() {
+    replay_fixture_dir("periodic/relative");
+}
+
+#[test]
+fn periodic_absolute() {
+    replay_fixture_dir("periodic/absolute");
+}
+
+#[test]
+fn mixed() {
+    replay_fixture_dir("mixed");
 }
