@@ -18,9 +18,8 @@ fn sync_work_after_on_time_tick_compensated_equally() {
         let task = TaskBuilder::every(Duration::from_millis(500))
             .name("task")
             .schedule(schedule)
-            .build()
-            .unwrap();
-        scheduler.add_task(task).unwrap();
+            .build();
+        scheduler.add_task(task);
 
         let result = scheduler.tick();
         assert_eq!(result.fired.len(), 1, "{schedule:?}: immediate fire");
@@ -54,9 +53,8 @@ fn fixed_rate_catches_up_after_late_fire() {
         .window(Window::new(Duration::ZERO, Duration::from_millis(100)))
         .name("task")
         .schedule(PeriodicSchedule::FixedRate)
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -87,9 +85,8 @@ fn fixed_delay_does_not_catch_up_after_late_fire() {
         .window(Window::new(Duration::ZERO, Duration::from_millis(100)))
         .name("task")
         .schedule(PeriodicSchedule::FixedDelay)
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -120,9 +117,8 @@ fn fixed_rate_late_fire_plus_sync_work() {
         .window(Window::new(Duration::ZERO, Duration::from_millis(100)))
         .name("task")
         .schedule(PeriodicSchedule::FixedRate)
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -151,9 +147,8 @@ fn fixed_delay_late_fire_plus_sync_work() {
         .window(Window::new(Duration::ZERO, Duration::from_millis(100)))
         .name("task")
         .schedule(PeriodicSchedule::FixedDelay)
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     clock.advance(Duration::from_millis(520));
     let result = scheduler.tick();
@@ -179,9 +174,8 @@ fn multi_cycle_drift_accumulation() {
             .window(Window::new(Duration::ZERO, Duration::from_millis(100)))
             .name("task")
             .schedule(PeriodicSchedule::FixedRate)
-            .build()
-            .unwrap();
-        scheduler.add_task(task).unwrap();
+            .build();
+        scheduler.add_task(task);
 
         for cycle in 0..5 {
             let sleep = scheduler.calculate_next_tick().unwrap();
@@ -204,9 +198,8 @@ fn multi_cycle_drift_accumulation() {
             .window(Window::new(Duration::ZERO, Duration::from_millis(100)))
             .name("task")
             .schedule(PeriodicSchedule::FixedDelay)
-            .build()
-            .unwrap();
-        scheduler.add_task(task).unwrap();
+            .build();
+        scheduler.add_task(task);
 
         for cycle in 0..5 {
             let sleep = scheduler.calculate_next_tick().unwrap();
@@ -231,9 +224,8 @@ fn fixed_rate_realigns_to_grid_after_miss() {
         .window(Window::new(Duration::ZERO, Duration::from_millis(100)))
         .name("task")
         .schedule(PeriodicSchedule::FixedRate)
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -260,9 +252,8 @@ fn fixed_delay_always_fires_past_window() {
         .window(Window::new(Duration::ZERO, Duration::from_millis(100)))
         .name("task")
         .schedule(PeriodicSchedule::FixedDelay)
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -289,9 +280,8 @@ fn fixed_rate_large_miss_skips_many_periods() {
         .window(Window::new(Duration::ZERO, Duration::from_millis(100)))
         .name("task")
         .schedule(PeriodicSchedule::FixedRate)
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -325,9 +315,8 @@ fn fixed_rate_miss_then_recovery_preserves_grid_long_term() {
         .window(Window::new(Duration::ZERO, Duration::from_millis(100)))
         .name("task")
         .schedule(PeriodicSchedule::FixedRate)
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     clock.advance(Duration::from_millis(800));
     let result = scheduler.tick();
@@ -359,9 +348,8 @@ fn execute_single_period_late_fires() {
         .name("task")
         .schedule(PeriodicSchedule::FixedRate)
         .on_miss(MissedTickBehavior::RunLatest)
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -389,9 +377,8 @@ fn execute_multi_period_late() {
         .name("task")
         .schedule(PeriodicSchedule::FixedRate)
         .on_miss(MissedTickBehavior::RunLatest)
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     clock.advance(Duration::from_millis(500));
     let result = scheduler.tick();
@@ -417,9 +404,8 @@ fn burst_unlimited_fires_all() {
         .name("task")
         .schedule(PeriodicSchedule::FixedRate)
         .on_miss(MissedTickBehavior::Burst { max: None })
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -449,9 +435,8 @@ fn burst_capped_fires_with_overflow() {
         .name("task")
         .schedule(PeriodicSchedule::FixedRate)
         .on_miss(MissedTickBehavior::Burst { max: Some(3) })
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -477,9 +462,8 @@ fn fixed_rate_miss_at_exact_grid_boundary() {
         .window(Window::new(Duration::ZERO, Duration::from_millis(100)))
         .name("task")
         .schedule(PeriodicSchedule::FixedRate)
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     clock.advance(Duration::from_millis(1000));
     let result = scheduler.tick();

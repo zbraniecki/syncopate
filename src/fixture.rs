@@ -230,29 +230,36 @@ fn add_task_def<C: crate::Clock>(scheduler: &mut Scheduler<(), C>, td: &TaskDef)
         Duration::from_nanos(td.window_early_ns),
         Duration::from_nanos(td.window_late_ns),
     );
-    let builder = match &td.kind {
+    let task = match &td.kind {
         TaskKindDef::Relative {
             initial_delay_ns,
             schedule,
-        } => TaskBuilder::every(Duration::from_nanos(td.period_ns))
-            .window(window)
-            .initial_delay(Duration::from_nanos(*initial_delay_ns))
-            .schedule(*schedule),
+        } => {
+            let mut builder = TaskBuilder::every(Duration::from_nanos(td.period_ns))
+                .window(window)
+                .initial_delay(Duration::from_nanos(*initial_delay_ns))
+                .schedule(*schedule)
+                .name(&td.name)
+                .on_miss(td.on_miss);
+            if let Some(repeat) = td.repeat {
+                builder = builder.repeat(repeat);
+            }
+            builder.build()
+        }
         TaskKindDef::Absolute { offset_ns } => {
-            let mut b =
+            let mut builder =
                 TaskBuilder::every_absolute(Duration::from_nanos(td.period_ns)).window(window);
             if *offset_ns != 0 {
-                b = b.offset(Duration::from_nanos(*offset_ns));
+                builder = builder.offset(Duration::from_nanos(*offset_ns));
             }
-            b
+            let mut builder = builder.name(&td.name).on_miss(td.on_miss);
+            if let Some(repeat) = td.repeat {
+                builder = builder.repeat(repeat);
+            }
+            builder.build()
         }
     };
-    let mut builder = builder.name(&td.name).on_miss(td.on_miss);
-    if let Some(repeat) = td.repeat {
-        builder = builder.repeat(repeat);
-    }
-    let task = builder.build().unwrap();
-    scheduler.add_task(task).unwrap();
+    scheduler.add_task(task);
 }
 
 fn auto_duration(input: &ScenarioInput) -> u64 {

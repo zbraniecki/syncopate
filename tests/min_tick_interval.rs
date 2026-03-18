@@ -14,9 +14,8 @@ fn calculate_next_tick_respects_min_tick_interval() {
 
     let task = TaskBuilder::every(Duration::from_millis(100))
         .name("fast")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     scheduler.tick();
 
@@ -40,9 +39,8 @@ fn min_tick_interval_causes_missed_deadlines() {
     let task = TaskBuilder::every(Duration::from_millis(100))
         .window(Window::symmetric(Duration::from_millis(10)))
         .name("fast")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
     scheduler.set_min_tick_interval(Some(Duration::from_millis(500)));
 
     let result = scheduler.tick();
@@ -75,9 +73,8 @@ fn min_tick_interval_execute_mode_fires_latest() {
         .window(Window::symmetric(Duration::from_millis(10)))
         .name("fast")
         .on_miss(MissedTickBehavior::RunLatest)
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
     scheduler.set_min_tick_interval(Some(Duration::from_millis(500)));
 
     scheduler.tick();
@@ -104,9 +101,8 @@ fn wide_window_task_survives_min_tick_interval() {
     let task = TaskBuilder::every(Duration::from_millis(200))
         .window(Window::new(Duration::ZERO, Duration::from_millis(200)))
         .name("wide")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
     scheduler.set_min_tick_interval(Some(Duration::from_millis(300)));
 
     let result = scheduler.tick();
@@ -129,9 +125,8 @@ fn min_tick_interval_none_has_no_effect() {
 
     let task = TaskBuilder::every(Duration::from_millis(100))
         .name("fast")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     scheduler.tick();
 
@@ -149,9 +144,8 @@ fn min_tick_interval_does_not_reduce_natural_sleep() {
 
     let task = TaskBuilder::every(Duration::from_secs(1))
         .name("slow")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     scheduler.tick();
 
@@ -169,9 +163,8 @@ fn period_500ms_fires_every_1s_with_min_tick_interval() {
 
     let task = TaskBuilder::every(Duration::from_millis(500))
         .name("half-second")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
     scheduler.set_min_tick_interval(Some(Duration::from_secs(1)));
 
     let result = scheduler.tick();

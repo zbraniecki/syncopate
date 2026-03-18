@@ -15,9 +15,8 @@ fn fires_at_wall_clock_boundary() {
     let task = TaskBuilder::every_absolute(Duration::from_millis(500))
         .window(Window::symmetric(Duration::from_millis(100)))
         .name("every_500ms")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -41,9 +40,8 @@ fn fires_within_early_window() {
     let task = TaskBuilder::every_absolute(Duration::from_millis(500))
         .window(Window::new(Duration::from_millis(100), Duration::ZERO))
         .name("every_500ms")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -65,9 +63,8 @@ fn fires_within_late_window() {
     let task = TaskBuilder::every_absolute(Duration::from_millis(500))
         .window(Window::new(Duration::ZERO, Duration::from_millis(100)))
         .name("every_500ms")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     clock.advance(Duration::from_millis(510));
     let result = scheduler.tick();
@@ -85,9 +82,8 @@ fn missed_past_late_window() {
     let task = TaskBuilder::every_absolute(Duration::from_millis(500))
         .window(Window::new(Duration::ZERO, Duration::from_millis(100)))
         .name("every_500ms")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     clock.advance(Duration::from_millis(650));
     let result = scheduler.tick();
@@ -106,9 +102,8 @@ fn consecutive_ticks() {
     let task = TaskBuilder::every_absolute(Duration::from_millis(500))
         .window(Window::symmetric(Duration::from_millis(100)))
         .name("every_500ms")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     clock.advance(Duration::from_millis(500));
     let result = scheduler.tick();
@@ -129,9 +124,8 @@ fn offset_tasks() {
         .offset(Duration::from_millis(200))
         .window(Window::symmetric(Duration::from_millis(50)))
         .name("every_1s_offset_200ms")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     clock.advance(Duration::from_millis(100));
     let result = scheduler.tick();
@@ -159,9 +153,8 @@ fn wall_clock_jump_forward() {
     let task = TaskBuilder::every_absolute(Duration::from_millis(500))
         .window(Window::symmetric(Duration::from_millis(100)))
         .name("every_500ms")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     clock.advance(Duration::from_millis(500));
     let result = scheduler.tick();
@@ -180,9 +173,8 @@ fn calculate_next_tick_returns_correct_duration() {
 
     let task = TaskBuilder::every_absolute(Duration::from_millis(500))
         .name("every_500ms")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     assert_eq!(scheduler.calculate_next_tick(), Some(Duration::ZERO));
     let result = scheduler.tick();
@@ -216,9 +208,8 @@ fn calculate_next_tick_with_early_window() {
     let task = TaskBuilder::every_absolute(Duration::from_millis(500))
         .window(Window::new(Duration::from_millis(50), Duration::ZERO))
         .name("every_500ms")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     assert_eq!(scheduler.calculate_next_tick(), Some(Duration::ZERO));
     let result = scheduler.tick();
@@ -243,9 +234,8 @@ fn does_not_fire_before_early_window() {
     let task = TaskBuilder::every_absolute(Duration::from_millis(500))
         .window(Window::new(Duration::from_millis(50), Duration::ZERO))
         .name("every_500ms")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);

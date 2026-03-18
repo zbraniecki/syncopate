@@ -14,9 +14,8 @@ fn once_after_fires_once_then_gone() {
 
     let task = TaskBuilder::once_after(Duration::from_millis(500))
         .name("one_shot")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     clock.advance(Duration::from_millis(400));
     let result = scheduler.tick();
@@ -41,9 +40,8 @@ fn times_3_fires_three_times_then_gone() {
     let task = TaskBuilder::every(Duration::from_millis(100))
         .name("three_shot")
         .repeat(Repeat::Times(3))
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1, "fire #1 (immediate)");
@@ -68,9 +66,8 @@ fn forever_task_keeps_firing() {
 
     let task = TaskBuilder::every(Duration::from_millis(100))
         .name("forever")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -90,15 +87,13 @@ fn mixed_forever_and_limited_tasks() {
 
     let forever_task = TaskBuilder::every(Duration::from_millis(100))
         .name("forever")
-        .build()
-        .unwrap();
+        .build();
     let limited_task = TaskBuilder::every(Duration::from_millis(100))
         .name("limited")
         .repeat(Repeat::Times(2))
-        .build()
-        .unwrap();
-    scheduler.add_task(forever_task).unwrap();
-    scheduler.add_task(limited_task).unwrap();
+        .build();
+    scheduler.add_task(forever_task);
+    scheduler.add_task(limited_task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 2);
@@ -120,9 +115,8 @@ fn anchored_once_at_boundary_fires_once() {
     let task = TaskBuilder::once_at(Duration::from_millis(500))
         .window(Window::symmetric(Duration::from_millis(50)))
         .name("anchored_once")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     clock.advance(Duration::from_millis(500));
     let result = scheduler.tick();
@@ -141,9 +135,8 @@ fn miss_does_not_decrement_remaining() {
 
     let task = TaskBuilder::once_after(Duration::from_millis(100))
         .name("one_shot")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     clock.advance(Duration::from_millis(250));
     let result = scheduler.tick();

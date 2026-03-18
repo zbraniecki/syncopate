@@ -2,7 +2,7 @@ mod builder;
 mod drift;
 mod schedule;
 
-pub use builder::{TaskBuildError, TaskBuilder};
+pub use builder::{Absolute, Relative, TaskBuilder};
 pub use drift::Drift;
 pub use schedule::{MissedTickBehavior, PeriodicSchedule, Repeat, Window};
 

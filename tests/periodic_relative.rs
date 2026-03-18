@@ -14,9 +14,8 @@ fn calculate_next_tick_single_task() {
 
     let task = TaskBuilder::every(Duration::from_millis(500))
         .name("every_500ms")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     assert_eq!(scheduler.calculate_next_tick(), Some(Duration::ZERO));
 
@@ -36,14 +35,12 @@ fn calculate_next_tick_returns_shortest_period() {
 
     let fast = TaskBuilder::every(Duration::from_millis(100))
         .name("fast")
-        .build()
-        .unwrap();
+        .build();
     let slow = TaskBuilder::every(Duration::from_millis(500))
         .name("slow")
-        .build()
-        .unwrap();
-    scheduler.add_task(fast).unwrap();
-    scheduler.add_task(slow).unwrap();
+        .build();
+    scheduler.add_task(fast);
+    scheduler.add_task(slow);
 
     assert_eq!(scheduler.calculate_next_tick(), Some(Duration::ZERO));
 
@@ -68,9 +65,8 @@ fn task_fires_when_deadline_reached() {
 
     let task = TaskBuilder::every(Duration::from_millis(500))
         .name("every_500ms")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -92,9 +88,8 @@ fn task_fires_when_past_deadline_within_late_window() {
     let task = TaskBuilder::every(Duration::from_millis(500))
         .window(Window::new(Duration::ZERO, Duration::from_millis(100)))
         .name("every_500ms")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -117,9 +112,8 @@ fn task_fires_early_within_early_window() {
     let task = TaskBuilder::every(Duration::from_millis(500))
         .window(Window::new(Duration::from_millis(100), Duration::ZERO))
         .name("every_500ms")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -141,9 +135,8 @@ fn task_missed_when_past_late_window() {
 
     let task = TaskBuilder::every(Duration::from_millis(500))
         .name("every_500ms")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -166,9 +159,8 @@ fn task_not_yet_due_before_early_window() {
     let task = TaskBuilder::every(Duration::from_millis(500))
         .window(Window::new(Duration::from_millis(100), Duration::ZERO))
         .name("every_500ms")
-        .build()
-        .unwrap();
-    scheduler.add_task(task).unwrap();
+        .build();
+    scheduler.add_task(task);
 
     let result = scheduler.tick();
     assert_eq!(result.fired.len(), 1);
@@ -187,9 +179,8 @@ fn multiple_tasks_all_fire_at_shared_deadline() {
     for name in ["a", "b", "c"] {
         let task = TaskBuilder::every(Duration::from_millis(500))
             .name(name)
-            .build()
-            .unwrap();
-        scheduler.add_task(task).unwrap();
+            .build();
+        scheduler.add_task(task);
     }
 
     let result = scheduler.tick();

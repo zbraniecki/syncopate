@@ -2,24 +2,14 @@ use crate::task::{
     MissCallback, MissedTickBehavior, PeriodicSchedule, Repeat, Task, TaskCallback, TaskType,
     Window,
 };
+use std::marker::PhantomData;
 use std::time::Duration;
-use thiserror::Error;
 
-#[derive(Debug, Error)]
-pub enum TaskBuildError {
-    #[error("Offset {offset:?} exceeds period {period:?}")]
-    OffsetExceedsPeriod { period: Duration, offset: Duration },
-    #[error("Offset cannot be set on relative tasks")]
-    OffsetOnRelativeTask,
-}
+pub struct Relative;
+pub struct Absolute;
 
-enum TaskKind {
-    Relative,
-    Absolute,
-}
-
-pub struct TaskBuilder<Ctx = ()> {
-    kind: TaskKind,
+pub struct TaskBuilder<Kind, Ctx = ()> {
+    _kind: PhantomData<Kind>,
     period: Duration,
     window: Option<Window>,
     offset: Option<Duration>,
@@ -33,27 +23,10 @@ pub struct TaskBuilder<Ctx = ()> {
     initial_delay: Duration,
 }
 
-impl<Ctx> TaskBuilder<Ctx> {
+impl<Ctx> TaskBuilder<Relative, Ctx> {
     pub fn every(period: Duration) -> Self {
         Self {
-            kind: TaskKind::Relative,
-            period,
-            window: None,
-            offset: None,
-            repeat: Repeat::Forever,
-            priority: 0,
-            name: None,
-            on_execute: None,
-            on_missed: None,
-            schedule: PeriodicSchedule::default(),
-            on_miss: MissedTickBehavior::default(),
-            initial_delay: Duration::ZERO,
-        }
-    }
-
-    pub fn every_absolute(period: Duration) -> Self {
-        Self {
-            kind: TaskKind::Absolute,
+            _kind: PhantomData,
             period,
             window: None,
             offset: None,
@@ -70,7 +43,7 @@ impl<Ctx> TaskBuilder<Ctx> {
 
     pub fn once_after(delay: Duration) -> Self {
         Self {
-            kind: TaskKind::Relative,
+            _kind: PhantomData,
             period: delay,
             window: None,
             offset: None,
@@ -85,9 +58,55 @@ impl<Ctx> TaskBuilder<Ctx> {
         }
     }
 
+    pub fn schedule(mut self, schedule: PeriodicSchedule) -> Self {
+        self.schedule = schedule;
+        self
+    }
+
+    pub fn initial_delay(mut self, delay: Duration) -> Self {
+        self.initial_delay = delay;
+        self
+    }
+
+    pub fn build(self) -> Task<Ctx> {
+        Task {
+            task_type: TaskType::Relative {
+                period: self.period,
+                window: self.window,
+                schedule: self.schedule,
+                on_miss: self.on_miss,
+                initial_delay: self.initial_delay,
+            },
+            repeat: self.repeat,
+            priority: self.priority,
+            name: self.name,
+            on_execute: self.on_execute,
+            on_missed: self.on_missed,
+        }
+    }
+}
+
+impl<Ctx> TaskBuilder<Absolute, Ctx> {
+    pub fn every_absolute(period: Duration) -> Self {
+        Self {
+            _kind: PhantomData,
+            period,
+            window: None,
+            offset: None,
+            repeat: Repeat::Forever,
+            priority: 0,
+            name: None,
+            on_execute: None,
+            on_missed: None,
+            schedule: PeriodicSchedule::default(),
+            on_miss: MissedTickBehavior::default(),
+            initial_delay: Duration::ZERO,
+        }
+    }
+
     pub fn once_at(period: Duration) -> Self {
         Self {
-            kind: TaskKind::Absolute,
+            _kind: PhantomData,
             period,
             window: None,
             offset: None,
@@ -102,13 +121,36 @@ impl<Ctx> TaskBuilder<Ctx> {
         }
     }
 
-    pub fn window(mut self, window: Window) -> Self {
-        self.window = Some(window);
+    pub fn offset(mut self, offset: Duration) -> Self {
+        assert!(
+            offset < self.period,
+            "offset {offset:?} must be less than period {:?}",
+            self.period
+        );
+        self.offset = Some(offset);
         self
     }
 
-    pub fn offset(mut self, offset: Duration) -> Self {
-        self.offset = Some(offset);
+    pub fn build(self) -> Task<Ctx> {
+        Task {
+            task_type: TaskType::Absolute {
+                period: self.period,
+                offset: self.offset,
+                window: self.window,
+                on_miss: self.on_miss,
+            },
+            repeat: self.repeat,
+            priority: self.priority,
+            name: self.name,
+            on_execute: self.on_execute,
+            on_missed: self.on_missed,
+        }
+    }
+}
+
+impl<Kind, Ctx> TaskBuilder<Kind, Ctx> {
+    pub fn window(mut self, window: Window) -> Self {
+        self.window = Some(window);
         self
     }
 
@@ -145,57 +187,5 @@ impl<Ctx> TaskBuilder<Ctx> {
     pub fn on_miss(mut self, behavior: MissedTickBehavior) -> Self {
         self.on_miss = behavior;
         self
-    }
-
-    pub fn schedule(mut self, schedule: PeriodicSchedule) -> Self {
-        self.schedule = schedule;
-        self
-    }
-
-    pub fn initial_delay(mut self, delay: Duration) -> Self {
-        self.initial_delay = delay;
-        self
-    }
-
-    pub fn build(self) -> Result<Task<Ctx>, TaskBuildError> {
-        let task_type = match self.kind {
-            TaskKind::Relative => {
-                if self.offset.is_some() {
-                    return Err(TaskBuildError::OffsetOnRelativeTask);
-                }
-                TaskType::Relative {
-                    period: self.period,
-                    window: self.window,
-                    schedule: self.schedule,
-                    on_miss: self.on_miss,
-                    initial_delay: self.initial_delay,
-                }
-            }
-            TaskKind::Absolute => {
-                if let Some(offset) = self.offset
-                    && offset >= self.period
-                {
-                    return Err(TaskBuildError::OffsetExceedsPeriod {
-                        period: self.period,
-                        offset,
-                    });
-                }
-                TaskType::Absolute {
-                    period: self.period,
-                    offset: self.offset,
-                    window: self.window,
-                    on_miss: self.on_miss,
-                }
-            }
-        };
-
-        Ok(Task {
-            task_type,
-            repeat: self.repeat,
-            priority: self.priority,
-            name: self.name,
-            on_execute: self.on_execute,
-            on_missed: self.on_missed,
-        })
     }
 }

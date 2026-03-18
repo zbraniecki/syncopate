@@ -2,11 +2,12 @@ mod deadline;
 mod tick;
 mod types;
 
-pub use types::{AddTaskError, MissedExecution, TaskExecution, TickResult};
+pub use types::{MissedExecution, TaskExecution, TickResult};
 
-use crate::clock::{Clock, MonoInstant, RealClock};
+use crate::clock::{Clock, MonoInstant, RealClock, WallInstant};
 use crate::task::{Drift, Repeat, Task, TaskType, Window};
 use deadline::{floor_wall_deadline, next_absolute_deadline};
+use std::cmp::Ordering;
 use std::time::Duration;
 use tick::{tick_absolute, tick_relative};
 use types::{ScheduledTask, TaskState};
@@ -50,101 +51,88 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
         self.min_tick_interval = interval;
     }
 
-    pub fn add_task(&mut self, task: Task<Ctx>) -> Result<Option<Drift>, AddTaskError> {
+    pub fn add_task(&mut self, task: Task<Ctx>) -> Option<Drift> {
         let now = self.clock.monotonic_now();
-        let wall_now = self.clock.wall_now();
-
-        let last_wall_deadline = match &task.task_type {
-            TaskType::Absolute { period, offset, .. } => {
-                let offset_dur = offset.unwrap_or(Duration::ZERO);
-                let floor = floor_wall_deadline(wall_now, *period, offset_dur);
-                match floor {
-                    Some(f) if f == wall_now => None,
-                    other => other,
-                }
-            }
-            _ => None,
-        };
-
         let remaining = match task.repeat {
             Repeat::Forever => None,
             Repeat::Times(n) => Some(n),
         };
 
-        self.tasks.push(ScheduledTask {
-            task,
-            state: TaskState {
-                added_at: now,
-                last_fired: None,
-                last_wall_deadline,
-                remaining,
-            },
-        });
-
-        if !self.running {
-            return Ok(None);
-        }
-
-        // Check if this task should fire immediately.
-        let st = self.tasks.last_mut().unwrap();
-        let immediate_drift = match &st.task.task_type {
-            TaskType::Relative {
-                initial_delay,
-                window,
-                ..
-            } if *initial_delay == Duration::ZERO => {
-                // Deadline is added_at == now, so drift is zero.
-                // Check window: window_end = now + late, which is >= now always.
-                let _window = window.unwrap_or(Window::ZERO);
-                st.state.last_fired = Some(now);
-                if let Some(ref mut r) = st.state.remaining {
-                    *r = r.saturating_sub(1);
-                }
-                Some(Drift::OnTime)
+        let (state, immediate_drift) = match &task.task_type {
+            TaskType::Relative { initial_delay, .. } => {
+                let fires_now = self.running && *initial_delay == Duration::ZERO;
+                let state = TaskState {
+                    added_at: now,
+                    last_fired: fires_now.then_some(now),
+                    last_wall_deadline: None,
+                    remaining: if fires_now {
+                        remaining.map(|r| r.saturating_sub(1))
+                    } else {
+                        remaining
+                    },
+                };
+                (state, fires_now.then_some(Drift::OnTime))
             }
+
             TaskType::Absolute {
                 period,
                 offset,
                 window,
                 ..
             } => {
+                let wall_now = self.clock.wall_now();
                 let offset_dur = offset.unwrap_or(Duration::ZERO);
-                let deadline = next_absolute_deadline(
-                    wall_now,
-                    *period,
-                    offset_dur,
-                    st.state.last_wall_deadline,
-                );
-                let window = window.unwrap_or(Window::ZERO);
-                let window_start = deadline - window.early;
-                let window_end = deadline + window.late;
 
-                if wall_now >= window_start && wall_now <= window_end {
-                    let drift = if wall_now.as_nanos() > deadline.as_nanos() {
-                        Drift::Late(Duration::from_nanos(
-                            wall_now.as_nanos() - deadline.as_nanos(),
-                        ))
-                    } else if wall_now.as_nanos() < deadline.as_nanos() {
-                        Drift::Early(Duration::from_nanos(
-                            deadline.as_nanos() - wall_now.as_nanos(),
-                        ))
+                let floor = floor_wall_deadline(wall_now, *period, offset_dur);
+                let anchored_deadline = match floor {
+                    Some(f) if f == wall_now => None,
+                    other => other,
+                };
+
+                let immediate_drift = if self.running {
+                    let deadline =
+                        next_absolute_deadline(wall_now, *period, offset_dur, anchored_deadline);
+                    let window = window.unwrap_or(Window::ZERO);
+
+                    if wall_now >= deadline - window.early && wall_now <= deadline + window.late {
+                        let drift = match wall_now.as_nanos().cmp(&deadline.as_nanos()) {
+                            Ordering::Greater => Drift::Late(Duration::from_nanos(
+                                wall_now.as_nanos() - deadline.as_nanos(),
+                            )),
+                            Ordering::Less => Drift::Early(Duration::from_nanos(
+                                deadline.as_nanos() - wall_now.as_nanos(),
+                            )),
+                            Ordering::Equal => Drift::OnTime,
+                        };
+                        Some((drift, deadline))
                     } else {
-                        Drift::OnTime
-                    };
-                    st.state.last_wall_deadline = Some(deadline);
-                    st.state.last_fired = Some(now);
-                    if let Some(ref mut r) = st.state.remaining {
-                        *r = r.saturating_sub(1);
+                        None
                     }
-                    Some(drift)
                 } else {
                     None
-                }
+                };
+
+                let state = match immediate_drift {
+                    Some((_, deadline)) => TaskState {
+                        added_at: now,
+                        last_fired: Some(now),
+                        last_wall_deadline: Some(deadline),
+                        remaining: remaining.map(|r| r.saturating_sub(1)),
+                    },
+                    None => TaskState {
+                        added_at: now,
+                        last_fired: None,
+                        last_wall_deadline: anchored_deadline,
+                        remaining,
+                    },
+                };
+
+                (state, immediate_drift.map(|(drift, _)| drift))
             }
-            _ => None,
         };
 
-        Ok(immediate_drift)
+        self.tasks.push(ScheduledTask { task, state });
+        immediate_drift
     }
 
     pub fn next_tick_deadline(&self) -> Option<MonoInstant> {
@@ -165,6 +153,7 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
     }
 
     fn soonest_deadline(&self) -> Option<MonoInstant> {
+        let mut clock_cache: Option<(MonoInstant, WallInstant)> = None;
         let mut soonest: Option<MonoInstant> = None;
 
         for st in &self.tasks {
@@ -183,8 +172,8 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
                     None => st.state.added_at + *initial_delay,
                 },
                 TaskType::Absolute { period, offset, .. } => {
-                    let now = self.clock.monotonic_now();
-                    let wall_now = self.clock.wall_now();
+                    let (now, wall_now) = *clock_cache
+                        .get_or_insert_with(|| (self.clock.monotonic_now(), self.clock.wall_now()));
                     let offset_dur = offset.unwrap_or(Duration::ZERO);
                     let deadline = next_absolute_deadline(
                         wall_now,
@@ -205,8 +194,7 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
 
             soonest = Some(match soonest {
                 None => mono_deadline,
-                Some(s) if mono_deadline < s => mono_deadline,
-                Some(s) => s,
+                Some(s) => s.min(mono_deadline),
             });
         }
 
@@ -218,7 +206,7 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
         self.tasks.retain(|t| t.state.remaining != Some(0));
 
         let now = self.clock.monotonic_now();
-        let wall_now = self.clock.wall_now();
+        let mut wall_now: Option<WallInstant> = None;
         let mut fired = vec![];
         let mut missed = vec![];
 
@@ -228,6 +216,7 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
                     tick_relative(&st.task, &mut st.state, now, &mut fired, &mut missed);
                 }
                 TaskType::Absolute { .. } => {
+                    let wall_now = *wall_now.get_or_insert_with(|| self.clock.wall_now());
                     tick_absolute(
                         &st.task,
                         &mut st.state,

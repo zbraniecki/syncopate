@@ -878,25 +878,32 @@ fn add_scenario_task<C: syncopate::Clock>(
     st: &ScenarioTask,
 ) -> Option<syncopate::Drift> {
     let window = Window::symmetric(st.window);
-    let builder = match &st.kind {
+    let task = match &st.kind {
         ScenarioTaskKind::Relative {
             initial_delay,
             schedule,
         } => TaskBuilder::every(st.period)
             .window(window)
             .initial_delay(*initial_delay)
-            .schedule(*schedule),
-        ScenarioTaskKind::Absolute { offset: None } => {
-            TaskBuilder::every_absolute(st.period).window(window)
-        }
+            .schedule(*schedule)
+            .name(&st.name)
+            .on_miss(st.on_miss)
+            .build(),
+        ScenarioTaskKind::Absolute { offset: None } => TaskBuilder::every_absolute(st.period)
+            .window(window)
+            .name(&st.name)
+            .on_miss(st.on_miss)
+            .build(),
         ScenarioTaskKind::Absolute {
             offset: Some(offset),
         } => TaskBuilder::every_absolute(st.period)
             .offset(*offset)
-            .window(window),
+            .window(window)
+            .name(&st.name)
+            .on_miss(st.on_miss)
+            .build(),
     };
-    let task = builder.name(&st.name).on_miss(st.on_miss).build().unwrap();
-    scheduler.add_task(task).unwrap()
+    scheduler.add_task(task)
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────────

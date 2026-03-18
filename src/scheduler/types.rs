@@ -1,15 +1,6 @@
 use crate::clock::{MonoInstant, WallInstant};
 use crate::task::{Drift, Task};
 use std::time::Duration;
-use thiserror::Error;
-
-#[derive(Debug, Error)]
-pub enum AddTaskError {
-    #[error("Deadline is in the past")]
-    DeadlineInPast,
-    #[error("Clock went backward")]
-    ClockWentBackward,
-}
 
 #[derive(Debug)]
 pub struct TaskExecution<'a, Ctx = ()> {

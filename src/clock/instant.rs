@@ -64,6 +64,11 @@ impl WallInstant {
     pub fn checked_duration_since(self, earlier: Self) -> Option<Duration> {
         self.0.checked_sub(earlier.0).map(Duration::from_nanos)
     }
+
+    #[inline]
+    pub fn saturating_duration_since(self, earlier: Self) -> Duration {
+        Duration::from_nanos(self.0.saturating_sub(earlier.0))
+    }
 }
 
 impl std::ops::Add<Duration> for WallInstant {
@@ -83,5 +88,12 @@ impl std::ops::Sub<Duration> for WallInstant {
     type Output = Self;
     fn sub(self, rhs: Duration) -> Self {
         Self(self.0.saturating_sub(rhs.as_nanos() as u64))
+    }
+}
+
+impl std::ops::Sub<WallInstant> for WallInstant {
+    type Output = Duration;
+    fn sub(self, rhs: WallInstant) -> Duration {
+        self.saturating_duration_since(rhs)
     }
 }
