@@ -9,20 +9,26 @@ pub use schedule::{MissedTickBehavior, PeriodicSchedule, Repeat, Window};
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct RelativeTask {
+    pub period: Duration,
+    pub window: Option<Window>,
+    pub schedule: PeriodicSchedule,
+    pub on_miss: MissedTickBehavior,
+    pub initial_delay: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AbsoluteTask {
+    pub period: Duration,
+    pub offset: Option<Duration>,
+    pub window: Option<Window>,
+    pub on_miss: MissedTickBehavior,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum TaskType {
-    Relative {
-        period: Duration,
-        window: Option<Window>,
-        schedule: PeriodicSchedule,
-        on_miss: MissedTickBehavior,
-        initial_delay: Duration,
-    },
-    Absolute {
-        period: Duration,
-        offset: Option<Duration>,
-        window: Option<Window>,
-        on_miss: MissedTickBehavior,
-    },
+    Relative(RelativeTask),
+    Absolute(AbsoluteTask),
 }
 
 pub type TaskCallback<Ctx> = fn(&Ctx, Drift);

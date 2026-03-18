@@ -59,8 +59,8 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
         };
 
         let (state, immediate_drift) = match &task.task_type {
-            TaskType::Relative { initial_delay, .. } => {
-                let fires_now = self.running && *initial_delay == Duration::ZERO;
+            TaskType::Relative(data) => {
+                let fires_now = self.running && data.initial_delay == Duration::ZERO;
                 let state = TaskState {
                     added_at: now,
                     last_fired: fires_now.then_some(now),
@@ -74,25 +74,24 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
                 (state, fires_now.then_some(Drift::OnTime))
             }
 
-            TaskType::Absolute {
-                period,
-                offset,
-                window,
-                ..
-            } => {
+            TaskType::Absolute(data) => {
                 let wall_now = self.clock.wall_now();
-                let offset_dur = offset.unwrap_or(Duration::ZERO);
+                let offset_dur = data.offset.unwrap_or(Duration::ZERO);
 
-                let floor = floor_wall_deadline(wall_now, *period, offset_dur);
+                let floor = floor_wall_deadline(wall_now, data.period, offset_dur);
                 let anchored_deadline = match floor {
                     Some(f) if f == wall_now => None,
                     other => other,
                 };
 
                 let immediate_drift = if self.running {
-                    let deadline =
-                        next_absolute_deadline(wall_now, *period, offset_dur, anchored_deadline);
-                    let window = window.unwrap_or(Window::ZERO);
+                    let deadline = next_absolute_deadline(
+                        wall_now,
+                        data.period,
+                        offset_dur,
+                        anchored_deadline,
+                    );
+                    let window = data.window.unwrap_or(Window::ZERO);
 
                     if wall_now >= deadline - window.early && wall_now <= deadline + window.late {
                         let drift = match wall_now.as_nanos().cmp(&deadline.as_nanos()) {
@@ -162,22 +161,18 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
             }
 
             let mono_deadline = match &st.task.task_type {
-                TaskType::Relative {
-                    period,
-                    initial_delay,
-                    ..
-                } => match st.state.last_fired {
-                    Some(fired) => fired + *period,
-                    None if *initial_delay == Duration::ZERO => st.state.added_at,
-                    None => st.state.added_at + *initial_delay,
+                TaskType::Relative(data) => match st.state.last_fired {
+                    Some(fired) => fired + data.period,
+                    None if data.initial_delay == Duration::ZERO => st.state.added_at,
+                    None => st.state.added_at + data.initial_delay,
                 },
-                TaskType::Absolute { period, offset, .. } => {
+                TaskType::Absolute(data) => {
                     let (now, wall_now) = *clock_cache
                         .get_or_insert_with(|| (self.clock.monotonic_now(), self.clock.wall_now()));
-                    let offset_dur = offset.unwrap_or(Duration::ZERO);
+                    let offset_dur = data.offset.unwrap_or(Duration::ZERO);
                     let deadline = next_absolute_deadline(
                         wall_now,
-                        *period,
+                        data.period,
                         offset_dur,
                         st.state.last_wall_deadline,
                     );
@@ -207,28 +202,23 @@ impl<Ctx, C: Clock> Scheduler<Ctx, C> {
 
         let now = self.clock.monotonic_now();
         let mut wall_now: Option<WallInstant> = None;
-        let mut fired = vec![];
-        let mut missed = vec![];
+        let mut result = TickResult {
+            fired: vec![],
+            missed: vec![],
+        };
 
         for st in &mut self.tasks {
             match &st.task.task_type {
-                TaskType::Relative { .. } => {
-                    tick_relative(&st.task, &mut st.state, now, &mut fired, &mut missed);
+                TaskType::Relative(data) => {
+                    tick_relative(data, &st.task, &mut st.state, now, &mut result);
                 }
-                TaskType::Absolute { .. } => {
+                TaskType::Absolute(data) => {
                     let wall_now = *wall_now.get_or_insert_with(|| self.clock.wall_now());
-                    tick_absolute(
-                        &st.task,
-                        &mut st.state,
-                        now,
-                        wall_now,
-                        &mut fired,
-                        &mut missed,
-                    );
+                    tick_absolute(data, &st.task, &mut st.state, now, wall_now, &mut result);
                 }
             }
         }
 
-        TickResult { fired, missed }
+        result
     }
 }

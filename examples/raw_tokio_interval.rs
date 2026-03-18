@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 fn tick() {
-    println!("[tick] doing scheduled work at {:?}", Instant::now());
+    println!("[tick] executed tick at {:?}", Instant::now());
 }
 
 #[tokio::main]

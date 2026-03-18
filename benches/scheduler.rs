@@ -1,4 +1,5 @@
-use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 use std::rc::Rc;
 use std::time::Duration;
 use syncopate::fixture::{Fixture, TaskDef, TaskKindDef};

@@ -1,34 +1,24 @@
 use super::deadline::{calculate_drift, missed_offsets};
-use super::types::{MissedExecution, TaskExecution, TaskState};
+use super::types::{TaskState, TickResult};
 use crate::clock::{MonoInstant, WallInstant};
-use crate::task::{Drift, MissedTickBehavior, PeriodicSchedule, Task, TaskType, Window};
+use crate::task::{
+    AbsoluteTask, Drift, MissedTickBehavior, PeriodicSchedule, RelativeTask, Task, Window,
+};
 use std::cmp::Ordering;
 use std::time::Duration;
 
 pub(crate) fn tick_relative<'a, Ctx>(
+    data: &RelativeTask,
     task: &'a Task<Ctx>,
     state: &mut TaskState,
     now: MonoInstant,
-    fired: &mut Vec<TaskExecution<'a, Ctx>>,
-    missed: &mut Vec<MissedExecution<'a, Ctx>>,
+    result: &mut TickResult<'a, Ctx>,
 ) {
-    let TaskType::Relative {
-        period,
-        window,
-        schedule,
-        on_miss,
-        initial_delay,
-    } = &task.task_type
-    else {
-        return;
-    };
-    let (period, window, schedule, on_miss, initial_delay) = (
-        *period,
-        window.unwrap_or(Window::ZERO),
-        *schedule,
-        *on_miss,
-        *initial_delay,
-    );
+    let period = data.period;
+    let window = data.window.unwrap_or(Window::ZERO);
+    let schedule = data.schedule;
+    let on_miss = data.on_miss;
+    let initial_delay = data.initial_delay;
 
     let next_deadline = match state.last_fired {
         Some(fired) => fired + period,
@@ -53,13 +43,15 @@ pub(crate) fn tick_relative<'a, Ctx>(
         if let Some(ref mut r) = state.remaining {
             *r = r.saturating_sub(1);
         }
-        fired.push(TaskExecution { task, drift });
+        result
+            .fired
+            .push(super::types::TaskExecution { task, drift });
     } else if schedule == PeriodicSchedule::FixedDelay {
         state.last_fired = Some(now);
         if let Some(ref mut r) = state.remaining {
             *r = r.saturating_sub(1);
         }
-        fired.push(TaskExecution {
+        result.fired.push(super::types::TaskExecution {
             task,
             drift: Drift::Late(now - next_deadline),
         });
@@ -77,7 +69,7 @@ pub(crate) fn tick_relative<'a, Ctx>(
         if latest_in_window {
             let missed_count = count - 1;
             if missed_count > 0 {
-                missed.push(MissedExecution {
+                result.missed.push(super::types::MissedExecution {
                     task,
                     deadlines_missed: missed_offsets(elapsed_ns, period_ns, missed_count),
                 });
@@ -89,7 +81,7 @@ pub(crate) fn tick_relative<'a, Ctx>(
             if let Some(ref mut r) = state.remaining {
                 *r = r.saturating_sub(1);
             }
-            fired.push(TaskExecution {
+            result.fired.push(super::types::TaskExecution {
                 task,
                 drift: calculate_drift(now, latest_deadline),
             });
@@ -97,7 +89,7 @@ pub(crate) fn tick_relative<'a, Ctx>(
             match on_miss {
                 MissedTickBehavior::RunLatest => {
                     if count > 1 {
-                        missed.push(MissedExecution {
+                        result.missed.push(super::types::MissedExecution {
                             task,
                             deadlines_missed: missed_offsets(elapsed_ns, period_ns, count - 1),
                         });
@@ -106,7 +98,7 @@ pub(crate) fn tick_relative<'a, Ctx>(
                     if let Some(ref mut r) = state.remaining {
                         *r = r.saturating_sub(1);
                     }
-                    fired.push(TaskExecution {
+                    result.fired.push(super::types::TaskExecution {
                         task,
                         drift: Drift::Late(now - latest_deadline),
                     });
@@ -115,7 +107,7 @@ pub(crate) fn tick_relative<'a, Ctx>(
                     let fire_count = max.map_or(count, |m| count.min(m));
                     let skip_count = count - fire_count;
                     if skip_count > 0 {
-                        missed.push(MissedExecution {
+                        result.missed.push(super::types::MissedExecution {
                             task,
                             deadlines_missed: missed_offsets(elapsed_ns, period_ns, skip_count),
                         });
@@ -123,7 +115,7 @@ pub(crate) fn tick_relative<'a, Ctx>(
                     for i in skip_count..count {
                         let offset = period_ns * i as u128;
                         let lateness = elapsed_ns - offset;
-                        fired.push(TaskExecution {
+                        result.fired.push(super::types::TaskExecution {
                             task,
                             drift: Drift::Late(Duration::from_nanos(lateness as u64)),
                         });
@@ -134,7 +126,7 @@ pub(crate) fn tick_relative<'a, Ctx>(
                     }
                 }
                 MissedTickBehavior::Skip => {
-                    missed.push(MissedExecution {
+                    result.missed.push(super::types::MissedExecution {
                         task,
                         deadlines_missed: missed_offsets(elapsed_ns, period_ns, count),
                     });
@@ -146,28 +138,17 @@ pub(crate) fn tick_relative<'a, Ctx>(
 }
 
 pub(crate) fn tick_absolute<'a, Ctx>(
+    data: &AbsoluteTask,
     task: &'a Task<Ctx>,
     state: &mut TaskState,
     now: MonoInstant,
     wall_now: WallInstant,
-    fired: &mut Vec<TaskExecution<'a, Ctx>>,
-    missed: &mut Vec<MissedExecution<'a, Ctx>>,
+    result: &mut TickResult<'a, Ctx>,
 ) {
-    let TaskType::Absolute {
-        period,
-        offset,
-        window,
-        on_miss,
-    } = &task.task_type
-    else {
-        return;
-    };
-    let (period, offset_dur, window, on_miss) = (
-        *period,
-        offset.unwrap_or(Duration::ZERO),
-        window.unwrap_or(Window::ZERO),
-        *on_miss,
-    );
+    let period = data.period;
+    let offset_dur = data.offset.unwrap_or(Duration::ZERO);
+    let window = data.window.unwrap_or(Window::ZERO);
+    let on_miss = data.on_miss;
 
     let deadline = super::deadline::next_absolute_deadline(
         wall_now,
@@ -194,7 +175,9 @@ pub(crate) fn tick_absolute<'a, Ctx>(
         if let Some(ref mut r) = state.remaining {
             *r = r.saturating_sub(1);
         }
-        fired.push(TaskExecution { task, drift });
+        result
+            .fired
+            .push(super::types::TaskExecution { task, drift });
     } else {
         let elapsed = wall_now - deadline;
         let periods_elapsed = elapsed.as_nanos() / period.as_nanos();
@@ -207,7 +190,7 @@ pub(crate) fn tick_absolute<'a, Ctx>(
         if latest_in_window {
             let missed_count = count - 1;
             if missed_count > 0 {
-                missed.push(MissedExecution {
+                result.missed.push(super::types::MissedExecution {
                     task,
                     deadlines_missed: missed_offsets(
                         elapsed.as_nanos(),
@@ -226,12 +209,14 @@ pub(crate) fn tick_absolute<'a, Ctx>(
             if let Some(ref mut r) = state.remaining {
                 *r = r.saturating_sub(1);
             }
-            fired.push(TaskExecution { task, drift });
+            result
+                .fired
+                .push(super::types::TaskExecution { task, drift });
         } else {
             match on_miss {
                 MissedTickBehavior::RunLatest => {
                     if count > 1 {
-                        missed.push(MissedExecution {
+                        result.missed.push(super::types::MissedExecution {
                             task,
                             deadlines_missed: missed_offsets(
                                 elapsed.as_nanos(),
@@ -245,7 +230,7 @@ pub(crate) fn tick_absolute<'a, Ctx>(
                     if let Some(ref mut r) = state.remaining {
                         *r = r.saturating_sub(1);
                     }
-                    fired.push(TaskExecution {
+                    result.fired.push(super::types::TaskExecution {
                         task,
                         drift: Drift::Late(wall_now - latest_wall_deadline),
                     });
@@ -254,7 +239,7 @@ pub(crate) fn tick_absolute<'a, Ctx>(
                     let fire_count = max.map_or(count, |m| count.min(m));
                     let skip_count = count - fire_count;
                     if skip_count > 0 {
-                        missed.push(MissedExecution {
+                        result.missed.push(super::types::MissedExecution {
                             task,
                             deadlines_missed: missed_offsets(
                                 elapsed.as_nanos(),
@@ -265,7 +250,7 @@ pub(crate) fn tick_absolute<'a, Ctx>(
                     }
                     for i in skip_count..count {
                         let fired_deadline = deadline + period * i;
-                        fired.push(TaskExecution {
+                        result.fired.push(super::types::TaskExecution {
                             task,
                             drift: Drift::Late(wall_now - fired_deadline),
                         });
@@ -277,7 +262,7 @@ pub(crate) fn tick_absolute<'a, Ctx>(
                     }
                 }
                 MissedTickBehavior::Skip => {
-                    missed.push(MissedExecution {
+                    result.missed.push(super::types::MissedExecution {
                         task,
                         deadlines_missed: missed_offsets(
                             elapsed.as_nanos(),

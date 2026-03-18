@@ -1,6 +1,6 @@
 use crate::task::{
-    MissCallback, MissedTickBehavior, PeriodicSchedule, Repeat, Task, TaskCallback, TaskType,
-    Window,
+    AbsoluteTask, MissCallback, MissedTickBehavior, PeriodicSchedule, RelativeTask, Repeat, Task,
+    TaskCallback, TaskType, Window,
 };
 use std::marker::PhantomData;
 use std::time::Duration;
@@ -70,13 +70,13 @@ impl<Ctx> TaskBuilder<Relative, Ctx> {
 
     pub fn build(self) -> Task<Ctx> {
         Task {
-            task_type: TaskType::Relative {
+            task_type: TaskType::Relative(RelativeTask {
                 period: self.period,
                 window: self.window,
                 schedule: self.schedule,
                 on_miss: self.on_miss,
                 initial_delay: self.initial_delay,
-            },
+            }),
             repeat: self.repeat,
             priority: self.priority,
             name: self.name,
@@ -133,12 +133,12 @@ impl<Ctx> TaskBuilder<Absolute, Ctx> {
 
     pub fn build(self) -> Task<Ctx> {
         Task {
-            task_type: TaskType::Absolute {
+            task_type: TaskType::Absolute(AbsoluteTask {
                 period: self.period,
                 offset: self.offset,
                 window: self.window,
                 on_miss: self.on_miss,
-            },
+            }),
             repeat: self.repeat,
             priority: self.priority,
             name: self.name,
